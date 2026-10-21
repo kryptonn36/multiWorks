@@ -50,15 +50,17 @@ func main() {
 	workspaceHandler := workspace.NewHandler(database)
 	projectHandler := project.NewHandler(database)
 	storyboardHandler := storyboard.NewHandler(database)
-	// opsHandler := ops.NewHandler(database)
 
 	// WEBSOCKET  connection
 
 	hub := websocket.NewHub()
-	websocketHandler := websocket.NewHandler(database, hub)
-	opsHandler := ops.NewHandler(database)
+	operationService := ops.NewService(database)
+	websocketHandler := websocket.NewHandler(database, hub, operationService)
+	opsHandler := ops.NewHandlerWithService(operationService)
+	projectHandler.SetMembershipPublisher(hub.PermissionsChanged)
+	workspaceHandler.SetMembershipPublisher(websocketHandler.WorkspacePermissionsChanged)
 
-	opsHandler.SetPublisher(func(projectID uuid.UUID, operation ops.Operation) {
+	operationService.SetPublisher(func(projectID uuid.UUID, operation ops.Operation) {
 		raw, err := json.Marshal(operation)
 		if err != nil {
 			return

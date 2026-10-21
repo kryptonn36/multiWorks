@@ -1,4 +1,3 @@
-
 package ops
 
 import (
@@ -8,12 +7,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// SubmitRequest is decoded by each transport and validated exclusively by Service.
 type SubmitRequest struct {
-	ClientID string          `json:"client_id" binding:"required"`
-	OpID     string          `json:"op_id" binding:"required"`
+	ClientID string          `json:"client_id"`
+	OpID     string          `json:"op_id"`
 	BaseSeq  int64           `json:"base_seq"`
-	Type     string          `json:"type" binding:"required"`
-	Payload  json.RawMessage `json:"payload" binding:"required"`
+	Type     string          `json:"type"`
+	Payload  json.RawMessage `json:"payload"`
 }
 
 type Operation struct {
@@ -29,9 +29,9 @@ type Operation struct {
 }
 
 type SubmitResponse struct {
-	Operation Operation `json:"operation"`
-	Duplicate bool      `json:"duplicate"`
-	CurrentSeq int64    `json:"current_seq"`
+	Operation  Operation `json:"operation"`
+	Duplicate  bool      `json:"duplicate"`
+	CurrentSeq int64     `json:"current_seq"`
 }
 
 type ReplayResponse struct {

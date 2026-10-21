@@ -109,3 +109,51 @@ Live events and replay share the same reducer and contiguous cursor. Later opera
 For a deployed frontend, set `FRONTEND_ORIGINS=https://your-frontend.example` (comma-separated exact origins) on the API; Compose forwards this environment variable. When unset, only local development origins are accepted. The built-in hub distributes events inside one API instance; multiple API replicas need shared broadcast infrastructure.
 
 To test, use two independent sessions for accounts that already belong to the workspace and project. Check that both emails appear online, edits arrive live, and View scene updates presence. Disconnect one session temporarily, edit in the other, and reconnect: the missed edits should appear once with a fresh ticket request. Navigate home or sign out and confirm that session disappears from the other presence list.
+
+
+## Test ordered reconnect and permission revocation
+
+Run `docker compose up --build`, then open http://localhost:5173 in a normal
+browser and a separate private window. Sign in as the project owner in the first
+and another account in the second. Add the second account to the workspace and
+project with role `editor` using the existing People/Add member forms.
+
+1. Open the same project's Storyboard in both sessions. Each should reach
+   **online** after **syncing**. Create or edit a scene/shot and confirm it appears
+   in the other session without clicking Sync changes.
+2. Click **Pause live** in the editor session. Its status becomes **offline**;
+   the owner should see its presence disappear. Make several edits as the owner.
+   Leave the paused editor's board untouched so its applied cursor stays behind.
+3. Click **Reconnect live** in the editor session. It should show **syncing**,
+   then **online**, display the missed edits exactly once, and match the owner's
+   **Applied sequence**. Continue editing in the owner session during reconnect.
+   The editor should eventually match its content and order. For a pagination
+   test, make more than 100 operations while that session is paused.
+4. In the owner session, open Project **People → Manage access** for the editor,
+   change its role to `viewer`, and save. Keep the other session's storyboard
+   open. Its **Your access** value and role-change message should update promptly,
+   without waiting for the five-second fallback. Its read connection remains open.
+5. In that viewer session, try adding/editing a scene. Controls remain available
+   for testing; the backend should return **editor or owner role required**, and
+   the applied sequence should not advance for the rejected operation. Owner edits
+   should continue appearing in the viewer session.
+6. Restore `editor` through Manage access. The open session should update its
+   role and permit a valid write without reload. Navigate home or sign out to
+   verify connection/presence cleanup.
+
+For protocol inspection, open browser DevTools → Network → WS → Messages. A
+connection sends `replay_start` with `boundary_seq`, one or more `replay` batches
+capped at that boundary, then `replay_complete` with the same boundary. Subsequent
+`operation` messages have strictly increasing sequences above the boundary.
+**Replay boundary** in the UI is a diagnostic checkpoint; it never advances the
+applied cursor by itself. The UI still buffers gaps and deduplicates overlap.
+
+Project/workspace membership upserts notify affected sockets only after their
+SQL statements commit. Downgrading an editor revokes write access while retaining
+read access. There is currently no remove-member API/UI; no deletion action was
+added. Full membership removal is covered by database-backed tests: a post-commit
+hub signal sends `permissions` with `access_revoked: true` and closes the socket;
+an out-of-band SQL removal without a signal is caught by the periodic check.
+The frontend stops reconnecting after full revocation; reopen the project once
+access is restored. The hub is process-local, so this guarantee currently applies
+to one API instance; multiple replicas need a shared event bus.

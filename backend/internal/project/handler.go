@@ -13,8 +13,14 @@ import (
 )
 
 type Handler struct {
-	database *sql.DB
-	queries  *db.Queries
+	database            *sql.DB
+	queries             *db.Queries
+	membershipPublisher func(uuid.UUID, uuid.UUID)
+}
+
+// SetMembershipPublisher configures post-commit permission notifications.
+func (h *Handler) SetMembershipPublisher(publisher func(uuid.UUID, uuid.UUID)) {
+	h.membershipPublisher = publisher
 }
 
 func NewHandler(database *sql.DB) *Handler {
@@ -376,5 +382,9 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 
+	// The successful standalone SQL statement has committed before notification.
+	if h.membershipPublisher != nil {
+		h.membershipPublisher(projectID, target.ID)
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "member added"})
 }

@@ -119,3 +119,27 @@ Verification: frontend tests cover fresh ticket reconnection, cursor/scene resto
 Live verification against Docker/PostgreSQL and two headless Chrome sessions passed: authenticated presence with email lookup, ticket reuse rejection, missing bearer rejection for issuance, unapproved origin rejection, JWT-free WebSocket URLs, immediate scene delivery, viewed-scene presence, idle/heartbeat stability, fresh-ticket reconnect with missed-operation recovery, and disconnect presence cleanup. The browser sessions reported no uncaught JavaScript exceptions. This does not test multiple API replicas; the hub remains process-local.
 
 The existing storyboard browser regression also passed with live delivery enabled: all eight operation types, partial updates, ordering and cascading deletion, lost-acknowledgment retry, pending-write recovery after reload, legacy write-route rejection, contiguous operation history, viewer write rejection, and mobile layout. Live redraws retain pending button states; deletion clears a now-missing viewed scene.
+
+
+## Ordered reconnect and permission notifications
+
+The socket now uses `replay_start` / `replay_complete` with a fixed `boundary_seq`.
+Live operations remain in a server buffer until bounded replay completes, then
+are released contiguously. The frontend serializes operation delivery, verifies
+successful application through the boundary before reporting online, and keeps
+its existing sequence buffer/replay fallback. Pause live / Reconnect live controls
+allow testing missed edits without replacing the board with a fresh snapshot.
+
+Membership upserts publish post-commit signals; affected writers refresh actual
+permissions and send role-change or full-revocation messages. The open storyboard
+updates Your access and shows a message, while all write controls remain available
+for backend constraint testing. Full revocation stops reconnect and heartbeat
+timers. Permission notifications bypass slow frontend replay. The periodic server
+check remains the fallback. Current membership routes support upserts, not removal.
+
+Two Chrome sessions against the Docker stack verified multi-page reconnect after
+125 missed updates, boundary-capped replay followed by live delivery, prompt
+editor-to-viewer downgrade via Manage access, backend rejection of both REST and
+socket writes, restoration to editor without reload, presence, and navigation
+cleanup. The normal frontend write path remains REST /ops. See README.md for the
+manual test steps, including the pause/reconnect controls.

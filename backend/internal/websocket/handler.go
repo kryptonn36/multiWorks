@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/kryptonn36/multiWorks/internal/ops"
 )
 
 const (
@@ -27,16 +28,18 @@ const (
 )
 
 type Handler struct {
-	DB    *sql.DB
-	Hub   *Hub
-	Store *Store
+	DB         *sql.DB
+	Hub        *Hub
+	Store      *Store
+	Operations *ops.Service
 }
 
-func NewHandler(database *sql.DB, hub *Hub) *Handler {
+func NewHandler(database *sql.DB, hub *Hub, operations *ops.Service) *Handler {
 	return &Handler{
-		DB:    database,
-		Hub:   hub,
-		Store: NewStore(database),
+		DB:         database,
+		Hub:        hub,
+		Store:      NewStore(database),
+		Operations: operations,
 	}
 }
 
@@ -90,6 +93,7 @@ func (h *Handler) Connect(c *gin.Context) {
 		UserID:    userID,
 		ProjectID: projectID,
 		Role:      role,
+		Replaying: true,
 		Send:      make(chan ServerMessage, ClientQueueSize),
 	}
 	h.Hub.Register(client)
@@ -118,9 +122,26 @@ func (h *Handler) sendReplay(
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	if !h.Hub.BeginReplay(client) {
+		return context.Canceled
+	}
+	boundary, err := h.Store.Boundary(ctx, client.ProjectID, client.UserID)
+	if err != nil {
+		return err
+	}
+	if lastSeen > boundary {
+		return errors.New("last_seen_seq is ahead of the project")
+	}
+	select {
+	case client.Send <- ServerMessage{Type: "replay_start", BoundarySeq: &boundary}:
+	case <-client.Done:
+		return context.Canceled
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	for {
-		ops, currentSeq, hasMore, err := h.Store.Replay(
-			ctx, client.ProjectID, client.UserID, lastSeen, replayBatch,
+		ops, currentSeq, hasMore, err := h.Store.ReplayThrough(
+			ctx, client.ProjectID, client.UserID, lastSeen, replayBatch, boundary,
 		)
 		if err != nil {
 			return err
@@ -133,10 +154,11 @@ func (h *Handler) sendReplay(
 
 		select {
 		case client.Send <- ServerMessage{
-			Type:       "replay",
-			Operations: raw,
-			CurrentSeq: currentSeq,
-			HasMore:    hasMore,
+			Type:        "replay",
+			BoundarySeq: &boundary,
+			Operations:  raw,
+			CurrentSeq:  currentSeq,
+			HasMore:     hasMore,
 		}:
 		case <-client.Done:
 			return context.Canceled
@@ -155,6 +177,12 @@ func (h *Handler) sendReplay(
 		}
 
 		if !hasMore {
+			if lastSeen != boundary {
+				return errors.New("operation history does not cover replay boundary")
+			}
+			if !h.Hub.FinishReplay(client, boundary) {
+				return context.Canceled
+			}
 			return nil
 		}
 	}
@@ -215,15 +243,7 @@ func (h *Handler) readPump(conn *websocket.Conn, client *Client) {
 			}
 
 		case "submit_op":
-			// Writes are deliberately rejected here until the shared operation
-			// service is wired to this socket handler. This prevents bypassing
-			// Stage 5 validation and role checks.
-			canWrite, err := h.Store.CanWrite(context.Background(), client.ProjectID, client.UserID)
-			if err != nil || !canWrite {
-				h.sendError(client, "editor or owner role required")
-				continue
-			}
-			h.sendError(client, "WebSocket operation submission is not enabled; submit through the authenticated REST operation endpoint")
+			h.submitOperation(client, msg.Operation)
 
 		default:
 			h.sendError(client, "unsupported message type")
@@ -238,17 +258,52 @@ func (h *Handler) writePump(conn *websocket.Conn, client *Client) {
 	authTicker := time.NewTicker(authCheckEvery)
 	defer authTicker.Stop()
 
+	role := client.Role
+	refresh := func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		current, err := h.Store.Role(ctx, client.ProjectID, client.UserID)
+		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "permission check unavailable"))
+				return false
+			}
+			_ = conn.WriteJSON(ServerMessage{Type: "permissions", AccessRevoked: true, Message: "Project access was revoked. Reopen the project after access is restored."})
+			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "project access revoked"))
+			return false
+		}
+		if current != role {
+			role = current
+			if err := conn.WriteJSON(ServerMessage{Type: "permissions", Role: role, Message: "Project role changed to " + role + ". Write permissions are checked by the backend."}); err != nil {
+				return false
+			}
+		}
+		return true
+	}
+	if !refresh() {
+		return
+	}
 	for {
 		select {
 		case <-client.Done:
 			return
+		case <-client.Permissions:
+			if !refresh() {
+				return
+			}
 		case <-authTicker.C:
-			if !h.authorized(client) {
-				_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
-				_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "project access revoked"))
+			if !refresh() {
 				return
 			}
 		case msg := <-client.Send:
+			select {
+			case <-client.Permissions:
+				if !refresh() {
+					return
+				}
+			default:
+			}
 			_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteJSON(msg); err != nil {
 				return
@@ -327,4 +382,56 @@ func allowedOrigin(r *http.Request) bool {
 		return false
 	}
 	return u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+}
+
+// submitOperation delegates all business checks to the same service used by REST.
+func (h *Handler) submitOperation(client *Client, raw json.RawMessage) {
+	var request ops.SubmitRequest
+	if err := json.Unmarshal(raw, &request); err != nil {
+		h.enqueue(client, ServerMessage{Type: "error", Status: 400, Message: "invalid operation request"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := h.Operations.Submit(ctx, client.ProjectID, client.UserID, request)
+	if err != nil {
+		h.enqueue(client, ServerMessage{Type: "error", Status: ops.ErrorStatus(err), Message: err.Error(), ClientID: request.ClientID, OpID: request.OpID})
+		return
+	}
+	operation, err := json.Marshal(result.Operation)
+	if err != nil {
+		h.sendError(client, "could not encode operation acknowledgement")
+		return
+	}
+	// Publication already happened after commit. This targeted ack also confirms duplicates.
+	h.enqueue(client, ServerMessage{Type: "ack", Operation: operation, Seq: result.Operation.Seq, CurrentSeq: result.CurrentSeq, Duplicate: &result.Duplicate, ClientID: request.ClientID, OpID: request.OpID})
+}
+
+func (h *Handler) enqueue(client *Client, message ServerMessage) {
+	timer := time.NewTimer(writeWait)
+	defer timer.Stop()
+	select {
+	case <-client.Done:
+	case client.Send <- message:
+	case <-timer.C:
+		// Stop a blocked writer; reconnect/replay and the original idempotency key recover.
+		h.Hub.Unregister(client)
+	}
+}
+
+// Workspace handlers call this only after their membership write commits.
+func (h *Handler) WorkspacePermissionsChanged(workspaceID, userID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rows, err := h.DB.QueryContext(ctx, `SELECT id FROM projects WHERE workspace_id=$1`, workspaceID)
+	if err != nil {
+		return
+	} // The periodic check remains the fallback.
+	defer rows.Close()
+	for rows.Next() {
+		var projectID uuid.UUID
+		if rows.Scan(&projectID) == nil {
+			h.Hub.PermissionsChanged(projectID, userID)
+		}
+	}
 }

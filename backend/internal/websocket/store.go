@@ -41,6 +41,14 @@ func (s *Store) Replay(
 	afterSeq int64,
 	limit int,
 ) ([]json.RawMessage, int64, bool, error) {
+	return s.replay(ctx, projectID, userID, afterSeq, limit, nil)
+}
+
+func (s *Store) ReplayThrough(ctx context.Context, projectID, userID uuid.UUID, afterSeq int64, limit int, boundary int64) ([]json.RawMessage, int64, bool, error) {
+	return s.replay(ctx, projectID, userID, afterSeq, limit, &boundary)
+}
+
+func (s *Store) replay(ctx context.Context, projectID, userID uuid.UUID, afterSeq int64, limit int, boundary *int64) ([]json.RawMessage, int64, bool, error) {
 	var currentSeq int64
 
 	err := s.DB.QueryRowContext(ctx, `
@@ -69,10 +77,10 @@ func (s *Store) Replay(
 			'created_at', created_at
 		)
 		FROM project_ops
-		WHERE project_id = $1 AND seq > $2
+		WHERE project_id = $1 AND seq > $2 AND ($4::bigint IS NULL OR seq <= $4)
 		ORDER BY seq ASC
 		LIMIT $3
-	`, projectID, afterSeq, limit+1)
+	`, projectID, afterSeq, limit+1, boundary)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -116,4 +124,10 @@ func authFailureStatus(err error) int {
 		return http.StatusNotFound
 	}
 	return http.StatusInternalServerError
+}
+
+func (s *Store) Boundary(ctx context.Context, projectID, userID uuid.UUID) (int64, error) {
+	var seq int64
+	err := s.DB.QueryRowContext(ctx, `SELECT p.last_seq FROM projects p JOIN project_members pm ON pm.project_id=p.id JOIN workspace_members wm ON wm.workspace_id=p.workspace_id AND wm.user_id=pm.user_id WHERE p.id=$1 AND pm.user_id=$2`, projectID, userID).Scan(&seq)
+	return seq, err
 }

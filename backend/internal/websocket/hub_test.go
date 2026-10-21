@@ -85,3 +85,71 @@ func TestPresenceUsesLatestTabAndExcludesStale(t *testing.T) {
 		t.Fatal("stale presence returned")
 	}
 }
+
+func TestReplayHandoffDiscardsOverlapAndOrdersDelayedPublications(t *testing.T) {
+	h := NewHub()
+	id := uuid.New()
+	c := &Client{ProjectID: id, Send: make(chan ServerMessage, 16), Replaying: true}
+	h.Register(c)
+	for _, seq := range []int64{4, 1, 3} {
+		h.Broadcast(id, ServerMessage{Type: "operation", Seq: seq})
+	}
+	if len(c.Send) != 0 {
+		t.Fatal("live operation escaped during replay")
+	}
+	if !h.FinishReplay(c, 2) {
+		t.Fatal("handoff failed")
+	}
+	marker := <-c.Send
+	if marker.Type != "replay_complete" || marker.BoundarySeq == nil || *marker.BoundarySeq != 2 {
+		t.Fatal("missing handoff boundary")
+	}
+	for _, want := range []int64{3, 4} {
+		if message := <-c.Send; message.Seq != want {
+			t.Fatalf("got seq %d, want %d", message.Seq, want)
+		}
+	}
+	h.Broadcast(id, ServerMessage{Type: "operation", Seq: 2}) // Late publication already replayed.
+	h.Broadcast(id, ServerMessage{Type: "operation", Seq: 6}) // Publication can arrive before seq 5.
+	if len(c.Send) != 0 {
+		t.Fatal("duplicate or noncontiguous operation escaped")
+	}
+	h.Broadcast(id, ServerMessage{Type: "operation", Seq: 5})
+	for _, want := range []int64{5, 6} {
+		if message := <-c.Send; message.Seq != want {
+			t.Fatalf("got seq %d, want %d", message.Seq, want)
+		}
+	}
+}
+
+func TestReplayBufferOverflowDisconnectsRatherThanDroppingHistory(t *testing.T) {
+	h := NewHub()
+	id := uuid.New()
+	c := &Client{ProjectID: id, Send: make(chan ServerMessage, 1), Replaying: true}
+	h.Register(c)
+	for seq := int64(1); seq <= ClientQueueSize+1; seq++ {
+		h.Broadcast(id, ServerMessage{Type: "operation", Seq: seq})
+	}
+	select {
+	case <-c.Done:
+	default:
+		t.Fatal("slow replay client was not disconnected")
+	}
+}
+
+func TestPermissionSignalsTargetEverySocketForAffectedUser(t *testing.T) {
+	h := NewHub()
+	project, user := uuid.New(), uuid.New()
+	first := &Client{ProjectID: project, UserID: user}
+	second := &Client{ProjectID: project, UserID: user}
+	other := &Client{ProjectID: project, UserID: uuid.New()}
+	for _, c := range []*Client{first, second, other} {
+		h.Register(c)
+	}
+	for range 10 {
+		h.PermissionsChanged(project, user)
+	}
+	if len(first.Permissions) != 1 || len(second.Permissions) != 1 || len(other.Permissions) != 0 {
+		t.Fatal("incorrect permission notification targets")
+	}
+}

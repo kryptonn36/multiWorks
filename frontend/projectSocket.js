@@ -26,19 +26,45 @@ export function connectProjectSocket({ projectId, getTicket, lastSeenSeq, onMess
       socket = new WebSocketClass(url);
       socket.onopen = () => {
         if (closed) { socket.close(); return; }
-        attempts = 0; onStatus('online'); sendScene();
+        attempts = 0; onStatus('syncing'); sendScene();
         heartbeatTimer = timers.setInterval(() => {
           if (socket?.readyState === WebSocketClass.OPEN) socket.send(JSON.stringify({ type: 'heartbeat' }));
         }, 15000);
       };
+      const connection = socket;
+      let delivery = Promise.resolve();
       socket.onmessage = (event) => {
-        if (closed) return;
-        try { Promise.resolve(onMessage(JSON.parse(event.data))).catch((error) => onStatus('error', error)); }
-        catch (error) { onStatus('error', error); }
+        let message;
+        try { message = JSON.parse(event.data); }
+        catch (error) { if (!closed) onStatus('error', error); return; }
+        if (closed || socket !== connection) return;
+        // Permission notifications must not wait behind a slow HTTP gap replay.
+        if (message.type === 'permissions') {
+          if (message.access_revoked) {
+            closed = true; timers.clearTimeout(reconnectTimer); timers.clearInterval(heartbeatTimer);
+            onStatus('revoked'); connection.close();
+          }
+          Promise.resolve(onMessage(message)).catch((error) => onStatus('error', error));
+          return;
+        }
+        delivery = delivery.then(async () => {
+          if (closed || socket !== connection) return;
+          if (message.type === 'replay_start') onStatus('syncing');
+          await onMessage(message);
+          if (closed || socket !== connection || connection.readyState !== WebSocketClass.OPEN) return;
+          if (message.type === 'replay_complete') onStatus('online');
+        }).catch((error) => { if (!closed && socket === connection) onStatus('error', error); });
       };
       socket.onerror = () => { if (!closed) onStatus('error'); };
-      socket.onclose = () => { timers.clearInterval(heartbeatTimer); retry(); };
-    } catch (error) { if (!closed) { onStatus('error', error); retry(); } }
+      socket.onclose = (event) => {
+        timers.clearInterval(heartbeatTimer);
+        if (event?.code === 1008 && !closed) { closed = true; onStatus('revoked', new Error('Project access was revoked.')); return; }
+        retry();
+      };
+    } catch (error) { if (!closed) {
+      if ([403, 404].includes(error.status)) { closed = true; onStatus('revoked', error); return; }
+      onStatus('error', error); retry();
+    } }
   }
   connect();
   return {

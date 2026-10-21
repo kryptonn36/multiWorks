@@ -14,12 +14,17 @@ import (
 )
 
 type Handler struct {
-    database  *sql.DB
-    publisher func(projectID uuid.UUID, operation Operation)
+	database *sql.DB
+	service  *Service
 }
 
 func NewHandler(database *sql.DB) *Handler {
-	return &Handler{database: database}
+	return NewHandlerWithService(NewService(database))
+}
+
+// NewHandlerWithService lets REST and other transports share one operation pipeline.
+func NewHandlerWithService(service *Service) *Handler {
+	return &Handler{database: service.database, service: service}
 }
 
 type payload struct {
@@ -36,9 +41,9 @@ type payload struct {
 }
 
 func (h *Handler) SetPublisher(
-    publisher func(projectID uuid.UUID, operation Operation),
+	publisher func(projectID uuid.UUID, operation Operation),
 ) {
-    h.publisher = publisher
+	h.service.SetPublisher(publisher)
 }
 
 func fail(c *gin.Context, status int, message string) {
@@ -144,175 +149,16 @@ func (h *Handler) Submit(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid operation request")
 		return
 	}
-	if err := validateRequest(req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	p, err := decodePayload(req.Payload)
+	result, err := h.service.Submit(c.Request.Context(), projectID, userID, req)
 	if err != nil {
-		fail(c, http.StatusBadRequest, "invalid operation payload")
+		fail(c, ErrorStatus(err), err.Error())
 		return
 	}
-
-	ctx := c.Request.Context()
-	tx, err := h.database.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "could not start operation")
-		return
+	status := http.StatusCreated
+	if result.Duplicate {
+		status = http.StatusOK
 	}
-	defer tx.Rollback()
-
-	// Lock this project row. All writers for this project serialize here.
-	var currentSeq int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT last_seq
-		FROM projects
-		WHERE id = $1
-		  AND EXISTS (
-		    SELECT 1
-		    FROM project_members pm
-		    JOIN workspace_members wm
-		      ON wm.user_id = pm.user_id
-		    WHERE pm.project_id = projects.id
-		      AND pm.user_id = $2
-		      AND wm.workspace_id = projects.workspace_id
-		  )
-		FOR UPDATE
-	`, projectID, userID).Scan(&currentSeq)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		fail(c, http.StatusNotFound, "project not found")
-		return
-	}
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "could not load project")
-		return
-	}
-
-	role, err := projectRoleTx(ctx, tx, projectID, userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		fail(c, http.StatusNotFound, "project not found")
-		return
-	}
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "could not check project permissions")
-		return
-	}
-	if role != "owner" && role != "editor" {
-		fail(c, http.StatusForbidden, "editor or owner role required")
-		return
-	}
-
-	// Check deduplication before applying any mutation.
-	var existing Operation
-	var existingPayload []byte
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, project_id, seq, client_id, op_id, actor_id,
-		       op_type, payload, created_at
-		FROM project_ops
-		WHERE project_id = $1 AND client_id = $2 AND op_id = $3
-	`, projectID, req.ClientID, req.OpID).Scan(
-		&existing.ID, &existing.ProjectID, &existing.Seq,
-		&existing.ClientID, &existing.OpID, &existing.ActorID,
-		&existing.Type, &existingPayload, &existing.CreatedAt,
-	)
-
-	if err == nil {
-		// Reusing an idempotency key for different content is a client bug.
-		if existing.ActorID != userID ||
-			existing.Type != req.Type ||
-			!jsonEqual(existingPayload, req.Payload) {
-			fail(c, http.StatusConflict, "idempotency key already used for another operation")
-			return
-		}
-
-		existing.Payload = existingPayload
-		if err := tx.Commit(); err != nil {
-			fail(c, http.StatusInternalServerError, "could not finish duplicate request")
-			return
-		}
-
-		c.JSON(http.StatusOK, SubmitResponse{
-			Operation:  existing,
-			Duplicate:  true,
-			CurrentSeq: currentSeq,
-		})
-		return
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		fail(c, http.StatusInternalServerError, "could not check operation history")
-		return
-	}
-
-	if req.BaseSeq > currentSeq {
-		fail(c, http.StatusConflict, "base_seq is ahead of the current project sequence")
-		return
-	}
-
-	// Apply the board mutation inside the same transaction as the log append.
-	if err := applyOperation(ctx, tx, projectID, userID, req.Type, p); err != nil {
-		var opErr *operationError
-		if errors.As(err, &opErr) {
-			fail(c, opErr.status, opErr.message)
-			return
-		}
-		fail(c, http.StatusInternalServerError, "could not apply operation")
-		return
-	}
-
-	var nextSeq int64
-	err = tx.QueryRowContext(ctx, `
-		UPDATE projects
-		SET last_seq = last_seq + 1,
-		    updated_at = NOW()
-		WHERE id = $1
-		RETURNING last_seq
-	`, projectID).Scan(&nextSeq)
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "could not allocate sequence")
-		return
-	}
-
-	op := Operation{
-		ID:        uuid.New(),
-		ProjectID: projectID,
-		Seq:       nextSeq,
-		ClientID:  req.ClientID,
-		OpID:      req.OpID,
-		ActorID:   userID,
-		Type:      req.Type,
-		Payload:   req.Payload,
-	}
-
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO project_ops (
-		    id, project_id, seq, client_id, op_id, actor_id, op_type, payload
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-		RETURNING created_at
-	`, op.ID, projectID, op.Seq, op.ClientID, op.OpID,
-		op.ActorID, op.Type, string(op.Payload),
-	).Scan(&op.CreatedAt)
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "could not append operation")
-		return
-	}
-
-	if err := tx.Commit(); err != nil {
-		fail(c, http.StatusInternalServerError, "could not commit operation")
-		return
-	}
-
-	if h.publisher != nil {
-		h.publisher(projectID, op)
-	}
-
-	c.JSON(http.StatusCreated, SubmitResponse{
-		Operation:  op,
-		Duplicate:  false,
-		CurrentSeq: nextSeq,
-	})
+	c.JSON(status, result)
 }
 
 type operationError struct {
