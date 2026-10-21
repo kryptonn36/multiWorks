@@ -7,6 +7,7 @@ import (
 	"github.com/kryptonn36/multiWorks/internal/db"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -27,8 +28,8 @@ type Scene struct {
 	Description string    `json:"description"`
 	Position    int       `json:"position"`
 	CreatedBy   uuid.UUID `json:"created_by"`
-	CreatedAt   string    `json:"created_at"`
-	UpdatedAt   string    `json:"updated_at"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 	Shots       []Shot    `json:"shots"`
 }
 
@@ -42,8 +43,8 @@ type Shot struct {
 	ImageURL  *string     `json:"image_url"`
 	Position  int         `json:"position"`
 	CreatedBy uuid.UUID   `json:"created_by"`
-	CreatedAt string      `json:"created_at"`
-	UpdatedAt string      `json:"updated_at"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 type createSceneRequest struct {
@@ -177,7 +178,7 @@ func (h *Handler) GetBoard(c *gin.Context) {
 	indexes := make(map[uuid.UUID]int)
 	for _, row := range sceneRows {
 		indexes[row.ID] = len(scenes)
-		scenes = append(scenes, Scene{ID: row.ID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.SCreatedAt, UpdatedAt: row.SUpdatedAt, Shots: []Shot{}})
+		scenes = append(scenes, Scene{ID: row.ID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Shots: []Shot{}})
 	}
 	shotRows, err := queries.ListBoardShots(c.Request.Context(), db.ListBoardShotsParams{ProjectID: projectID, UserID: userID})
 	if err != nil {
@@ -191,7 +192,7 @@ func (h *Handler) GetBoard(c *gin.Context) {
 			return
 		}
 		if index, ok := indexes[row.SceneID]; ok {
-			scenes[index].Shots = append(scenes[index].Shots, Shot{AssetIDs: assetIDs, ID: row.ID, SceneID: row.SceneID, Prompt: row.Prompt, Style: row.Style, Notes: row.Notes, ImageURL: db.StringPointer(row.ImageUrl), Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.SCreatedAt, UpdatedAt: row.SUpdatedAt})
+			scenes[index].Shots = append(scenes[index].Shots, Shot{AssetIDs: assetIDs, ID: row.ID, SceneID: row.SceneID, Prompt: row.Prompt, Style: row.Style, Notes: row.Notes, ImageURL: db.StringPointer(row.ImageUrl), Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt})
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -293,8 +294,8 @@ func (h *Handler) UpdateScene(c *gin.Context) {
 	scene.Description = updateStoryboardSceneResult.Description
 	scene.Position = int(updateStoryboardSceneResult.Position)
 	scene.CreatedBy = updateStoryboardSceneResult.CreatedBy
-	scene.CreatedAt = updateStoryboardSceneResult.SCreatedAt
-	scene.UpdatedAt = updateStoryboardSceneResult.SUpdatedAt
+	scene.CreatedAt = updateStoryboardSceneResult.CreatedAt
+	scene.UpdatedAt = updateStoryboardSceneResult.UpdatedAt
 
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, http.StatusNotFound, "scene not found")
@@ -459,8 +460,8 @@ func (h *Handler) UpdateShot(c *gin.Context) {
 	shot.ImageURL = db.StringPointer(updateStoryboardShotResult.ImageUrl)
 	shot.Position = int(updateStoryboardShotResult.Position)
 	shot.CreatedBy = updateStoryboardShotResult.CreatedBy
-	shot.CreatedAt = updateStoryboardShotResult.SCreatedAt
-	shot.UpdatedAt = updateStoryboardShotResult.SUpdatedAt
+	shot.CreatedAt = updateStoryboardShotResult.CreatedAt
+	shot.UpdatedAt = updateStoryboardShotResult.UpdatedAt
 
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, http.StatusNotFound, "shot not found")

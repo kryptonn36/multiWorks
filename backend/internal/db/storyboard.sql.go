@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -55,7 +56,7 @@ INSERT INTO scenes (
 		      AND pm.role IN ('owner', 'editor')
 		)
 		RETURNING id, project_id, title, description, position,
-		          created_by, created_at::text, updated_at::text
+		          created_by, created_at, updated_at
 `
 
 type CreateStoryboardSceneParams struct {
@@ -66,18 +67,7 @@ type CreateStoryboardSceneParams struct {
 	UserID      uuid.UUID
 }
 
-type CreateStoryboardSceneRow struct {
-	ID          uuid.UUID
-	ProjectID   uuid.UUID
-	Title       string
-	Description string
-	Position    int32
-	CreatedBy   uuid.UUID
-	CreatedAt   string
-	UpdatedAt   string
-}
-
-func (q *Queries) CreateStoryboardScene(ctx context.Context, arg CreateStoryboardSceneParams) (CreateStoryboardSceneRow, error) {
+func (q *Queries) CreateStoryboardScene(ctx context.Context, arg CreateStoryboardSceneParams) (Scene, error) {
 	row := q.db.QueryRowContext(ctx, createStoryboardScene,
 		arg.ID,
 		arg.ProjectID,
@@ -85,7 +75,7 @@ func (q *Queries) CreateStoryboardScene(ctx context.Context, arg CreateStoryboar
 		arg.Description,
 		arg.UserID,
 	)
-	var i CreateStoryboardSceneRow
+	var i Scene
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -119,7 +109,7 @@ INSERT INTO shots (
 		      AND pm.role IN ('owner', 'editor')
 		  )
 		RETURNING id, scene_id, prompt, style, notes, image_url, position,
-		          created_by, created_at::text, updated_at::text
+		          created_by, created_at, updated_at
 `
 
 type CreateStoryboardShotParams struct {
@@ -133,20 +123,7 @@ type CreateStoryboardShotParams struct {
 	ProjectID uuid.UUID
 }
 
-type CreateStoryboardShotRow struct {
-	ID        uuid.UUID
-	SceneID   uuid.UUID
-	Prompt    string
-	Style     string
-	Notes     string
-	ImageUrl  sql.NullString
-	Position  int32
-	CreatedBy uuid.UUID
-	CreatedAt string
-	UpdatedAt string
-}
-
-func (q *Queries) CreateStoryboardShot(ctx context.Context, arg CreateStoryboardShotParams) (CreateStoryboardShotRow, error) {
+func (q *Queries) CreateStoryboardShot(ctx context.Context, arg CreateStoryboardShotParams) (Shot, error) {
 	row := q.db.QueryRowContext(ctx, createStoryboardShot,
 		arg.ID,
 		arg.Prompt,
@@ -157,7 +134,7 @@ func (q *Queries) CreateStoryboardShot(ctx context.Context, arg CreateStoryboard
 		arg.SceneID,
 		arg.ProjectID,
 	)
-	var i CreateStoryboardShotRow
+	var i Shot
 	err := row.Scan(
 		&i.ID,
 		&i.SceneID,
@@ -273,7 +250,7 @@ func (q *Queries) GetStoryboardRole(ctx context.Context, arg GetStoryboardRolePa
 
 const listBoardScenes = `-- name: ListBoardScenes :many
 SELECT s.id, s.project_id, s.title, s.description, s.position,
-			s.created_by, s.created_at::text, s.updated_at::text
+			s.created_by, s.created_at, s.updated_at
 		FROM scenes s
 		WHERE s.project_id = $1
 		AND EXISTS (
@@ -295,26 +272,15 @@ type ListBoardScenesParams struct {
 	UserID    uuid.UUID
 }
 
-type ListBoardScenesRow struct {
-	ID          uuid.UUID
-	ProjectID   uuid.UUID
-	Title       string
-	Description string
-	Position    int32
-	CreatedBy   uuid.UUID
-	SCreatedAt  string
-	SUpdatedAt  string
-}
-
-func (q *Queries) ListBoardScenes(ctx context.Context, arg ListBoardScenesParams) ([]ListBoardScenesRow, error) {
+func (q *Queries) ListBoardScenes(ctx context.Context, arg ListBoardScenesParams) ([]Scene, error) {
 	rows, err := q.db.QueryContext(ctx, listBoardScenes, arg.ProjectID, arg.UserID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListBoardScenesRow
+	var items []Scene
 	for rows.Next() {
-		var i ListBoardScenesRow
+		var i Scene
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -322,8 +288,8 @@ func (q *Queries) ListBoardScenes(ctx context.Context, arg ListBoardScenesParams
 			&i.Description,
 			&i.Position,
 			&i.CreatedBy,
-			&i.SCreatedAt,
-			&i.SUpdatedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -341,7 +307,7 @@ func (q *Queries) ListBoardScenes(ctx context.Context, arg ListBoardScenesParams
 const listBoardShots = `-- name: ListBoardShots :many
 SELECT s.id, s.scene_id, s.prompt, s.style, s.notes,
 			s.image_url, s.position, s.created_by,
-			s.created_at::text, s.updated_at::text,
+			s.created_at, s.updated_at,
  COALESCE((SELECT jsonb_agg(sa.asset_id ORDER BY sa.created_at,sa.asset_id) FROM shot_assets sa WHERE sa.shot_id=s.id),'[]'::jsonb)::jsonb AS asset_ids
 		FROM shots s
 		JOIN scenes sc ON sc.id = s.scene_id
@@ -366,17 +332,17 @@ type ListBoardShotsParams struct {
 }
 
 type ListBoardShotsRow struct {
-	ID         uuid.UUID
-	SceneID    uuid.UUID
-	Prompt     string
-	Style      string
-	Notes      string
-	ImageUrl   sql.NullString
-	Position   int32
-	CreatedBy  uuid.UUID
-	SCreatedAt string
-	SUpdatedAt string
-	AssetIds   json.RawMessage
+	ID        uuid.UUID
+	SceneID   uuid.UUID
+	Prompt    string
+	Style     string
+	Notes     string
+	ImageUrl  sql.NullString
+	Position  int32
+	CreatedBy uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	AssetIds  json.RawMessage
 }
 
 func (q *Queries) ListBoardShots(ctx context.Context, arg ListBoardShotsParams) ([]ListBoardShotsRow, error) {
@@ -397,8 +363,8 @@ func (q *Queries) ListBoardShots(ctx context.Context, arg ListBoardShotsParams) 
 			&i.ImageUrl,
 			&i.Position,
 			&i.CreatedBy,
-			&i.SCreatedAt,
-			&i.SUpdatedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 			&i.AssetIds,
 		); err != nil {
 			return nil, err
@@ -477,7 +443,7 @@ UPDATE scenes s
 			AND pm.role IN ('owner', 'editor')
 		)
 		RETURNING s.id, s.project_id, s.title, s.description, s.position,
-		          s.created_by, s.created_at::text, s.updated_at::text
+		          s.created_by, s.created_at, s.updated_at
 `
 
 type UpdateStoryboardSceneParams struct {
@@ -489,18 +455,7 @@ type UpdateStoryboardSceneParams struct {
 	UserID      uuid.UUID
 }
 
-type UpdateStoryboardSceneRow struct {
-	ID          uuid.UUID
-	ProjectID   uuid.UUID
-	Title       string
-	Description string
-	Position    int32
-	CreatedBy   uuid.UUID
-	SCreatedAt  string
-	SUpdatedAt  string
-}
-
-func (q *Queries) UpdateStoryboardScene(ctx context.Context, arg UpdateStoryboardSceneParams) (UpdateStoryboardSceneRow, error) {
+func (q *Queries) UpdateStoryboardScene(ctx context.Context, arg UpdateStoryboardSceneParams) (Scene, error) {
 	row := q.db.QueryRowContext(ctx, updateStoryboardScene,
 		arg.Title,
 		arg.Description,
@@ -509,7 +464,7 @@ func (q *Queries) UpdateStoryboardScene(ctx context.Context, arg UpdateStoryboar
 		arg.ProjectID,
 		arg.UserID,
 	)
-	var i UpdateStoryboardSceneRow
+	var i Scene
 	err := row.Scan(
 		&i.ID,
 		&i.ProjectID,
@@ -517,8 +472,8 @@ func (q *Queries) UpdateStoryboardScene(ctx context.Context, arg UpdateStoryboar
 		&i.Description,
 		&i.Position,
 		&i.CreatedBy,
-		&i.SCreatedAt,
-		&i.SUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -544,7 +499,7 @@ UPDATE shots s
 		)
 		RETURNING s.id, s.scene_id, s.prompt, s.style, s.notes,
 		          s.image_url, s.position, s.created_by,
-		          s.created_at::text, s.updated_at::text
+		          s.created_at, s.updated_at
 `
 
 type UpdateStoryboardShotParams struct {
@@ -559,20 +514,7 @@ type UpdateStoryboardShotParams struct {
 	UserID    uuid.UUID
 }
 
-type UpdateStoryboardShotRow struct {
-	ID         uuid.UUID
-	SceneID    uuid.UUID
-	Prompt     string
-	Style      string
-	Notes      string
-	ImageUrl   sql.NullString
-	Position   int32
-	CreatedBy  uuid.UUID
-	SCreatedAt string
-	SUpdatedAt string
-}
-
-func (q *Queries) UpdateStoryboardShot(ctx context.Context, arg UpdateStoryboardShotParams) (UpdateStoryboardShotRow, error) {
+func (q *Queries) UpdateStoryboardShot(ctx context.Context, arg UpdateStoryboardShotParams) (Shot, error) {
 	row := q.db.QueryRowContext(ctx, updateStoryboardShot,
 		arg.Prompt,
 		arg.Style,
@@ -584,7 +526,7 @@ func (q *Queries) UpdateStoryboardShot(ctx context.Context, arg UpdateStoryboard
 		arg.ProjectID,
 		arg.UserID,
 	)
-	var i UpdateStoryboardShotRow
+	var i Shot
 	err := row.Scan(
 		&i.ID,
 		&i.SceneID,
@@ -594,8 +536,8 @@ func (q *Queries) UpdateStoryboardShot(ctx context.Context, arg UpdateStoryboard
 		&i.ImageUrl,
 		&i.Position,
 		&i.CreatedBy,
-		&i.SCreatedAt,
-		&i.SUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

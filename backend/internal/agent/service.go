@@ -116,6 +116,7 @@ func (s *Service) Get(ctx context.Context, project, user, id uuid.UUID) (Proposa
 func (s *Service) Decide(ctx context.Context, project, user, id uuid.UUID, approve bool) (Proposal, error) {
 	var row db.AgentProposal
 	stale := false
+	invalid := false
 	changed := false
 	_, err := s.Operations.Transact(ctx, project, user, func(tx *sql.Tx, apply func(ops.SubmitRequest) (ops.SubmitResponse, error)) error {
 		queries := db.New(tx)
@@ -159,20 +160,25 @@ func (s *Service) Decide(ctx context.Context, project, user, id uuid.UUID, appro
 				}
 
 				var proposed []ops.ProposedOperation
-				if json.Unmarshal(row.ProposedOps, &proposed) != nil {
-					return ops.NewError(409, "stored proposal is invalid")
+				validationErr := json.Unmarshal(row.ProposedOps, &proposed)
+				if validationErr == nil {
+					validationErr = ops.ValidateProposal(state, proposed, s.Limits.MaxOps)
 				}
-				if err := ops.ValidateProposal(state, proposed, s.Limits.MaxOps); err != nil {
-					return ops.NewError(409, "stored proposal is invalid: "+err.Error())
-				}
-				for index, operation := range proposed {
-					result, err := apply(ops.SubmitRequest{ClientID: "agent:" + id.String(), OpID: fmt.Sprint(index), BaseSeq: row.BaseSeq + int64(index), Type: operation.Type, Payload: operation.Payload})
-					if err != nil {
-						return err
+				if validationErr != nil {
+					status = "failed"
+					reason = "Stored proposal failed validation. Generate a new proposal."
+					invalid = true
+				} else {
+					for index, operation := range proposed {
+						result, err := apply(ops.SubmitRequest{ClientID: "agent:" + id.String(), OpID: fmt.Sprint(index), BaseSeq: row.BaseSeq + int64(index), Type: operation.Type, Payload: operation.Payload})
+						if err != nil {
+							return err
+						}
+						applied = append(applied, result.Operation)
 					}
-					applied = append(applied, result.Operation)
+					status = "approved"
 				}
-				status = "approved"
+
 			}
 		}
 		raw, _ := json.Marshal(applied)
@@ -187,7 +193,7 @@ func (s *Service) Decide(ctx context.Context, project, user, id uuid.UUID, appro
 	if changed {
 		s.publish(p)
 	}
-	if stale {
+	if stale || invalid {
 		return p, ops.NewError(409, p.FailureReason)
 	}
 	return p, nil

@@ -13,7 +13,7 @@ SELECT last_seq FROM projects WHERE id = sqlc.arg(project_id);
 
 -- name: ListBoardScenes :many
 SELECT s.id, s.project_id, s.title, s.description, s.position,
-			s.created_by, s.created_at::text, s.updated_at::text
+			s.created_by, s.created_at, s.updated_at
 		FROM scenes s
 		WHERE s.project_id = sqlc.arg(project_id)
 		AND EXISTS (
@@ -32,7 +32,7 @@ SELECT s.id, s.project_id, s.title, s.description, s.position,
 -- name: ListBoardShots :many
 SELECT s.id, s.scene_id, s.prompt, s.style, s.notes,
 			s.image_url, s.position, s.created_by,
-			s.created_at::text, s.updated_at::text,
+			s.created_at, s.updated_at,
  COALESCE((SELECT jsonb_agg(sa.asset_id ORDER BY sa.created_at,sa.asset_id) FROM shot_assets sa WHERE sa.shot_id=s.id),'[]'::jsonb)::jsonb AS asset_ids
 		FROM shots s
 		JOIN scenes sc ON sc.id = s.scene_id
@@ -70,7 +70,7 @@ INSERT INTO scenes (
 		      AND pm.role IN ('owner', 'editor')
 		)
 		RETURNING id, project_id, title, description, position,
-		          created_by, created_at::text, updated_at::text;
+		          created_by, created_at, updated_at;
 
 -- name: UpdateStoryboardScene :one
 UPDATE scenes s
@@ -89,7 +89,7 @@ UPDATE scenes s
 			AND pm.role IN ('owner', 'editor')
 		)
 		RETURNING s.id, s.project_id, s.title, s.description, s.position,
-		          s.created_by, s.created_at::text, s.updated_at::text;
+		          s.created_by, s.created_at, s.updated_at;
 
 -- name: DeleteStoryboardScene :execrows
 DELETE FROM scenes s
@@ -124,7 +124,7 @@ INSERT INTO shots (
 		      AND pm.role IN ('owner', 'editor')
 		  )
 		RETURNING id, scene_id, prompt, style, notes, image_url, position,
-		          created_by, created_at::text, updated_at::text;
+		          created_by, created_at, updated_at;
 
 -- name: UpdateStoryboardShot :one
 UPDATE shots s
@@ -147,7 +147,7 @@ UPDATE shots s
 		)
 		RETURNING s.id, s.scene_id, s.prompt, s.style, s.notes,
 		          s.image_url, s.position, s.created_by,
-		          s.created_at::text, s.updated_at::text;
+		          s.created_at, s.updated_at;
 
 -- name: DeleteStoryboardShot :execrows
 DELETE FROM shots s

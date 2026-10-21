@@ -10,7 +10,6 @@ import (
 	"image/color"
 	"image/png"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,57 +26,13 @@ import (
 	"github.com/kryptonn36/multiWorks/internal/db"
 	"github.com/kryptonn36/multiWorks/internal/history"
 	"github.com/kryptonn36/multiWorks/internal/ops"
+	"github.com/kryptonn36/multiWorks/tests/testsupport"
 )
 
 // A separate schema isolates job claiming from the running application's worker.
 func fixture(t *testing.T) *sql.DB {
 	t.Helper()
-	dsn := os.Getenv("OPS_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set OPS_TEST_DATABASE_URL to PostgreSQL")
-	}
-	admin, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := "stage8_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err = admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
-		t.Fatal(err)
-	}
-	target, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := target.Query()
-	query.Set("search_path", schema)
-	target.RawQuery = query.Encode()
-	database, err := sql.Open("pgx", target.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		database.Close()
-		_, err := admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
-		if err != nil {
-			t.Error(err)
-		}
-		admin.Close()
-	})
-	files, err := filepath.Glob("../../sql/migrations/*.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range files {
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		up := strings.Split(strings.Split(string(raw), "-- +goose Up")[1], "-- +goose Down")[0]
-		if _, err = database.Exec(up); err != nil {
-			t.Fatalf("%s: %v", file, err)
-		}
-	}
-	return database
+	return testsupport.IsolatedDatabase(t)
 }
 func imageBytes(t *testing.T, width, height int) []byte {
 	t.Helper()

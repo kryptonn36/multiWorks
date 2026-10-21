@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,15 +20,14 @@ import (
 	"github.com/kryptonn36/multiWorks/internal/ops"
 	"github.com/kryptonn36/multiWorks/internal/project"
 	"github.com/kryptonn36/multiWorks/internal/workspace"
+	"github.com/kryptonn36/multiWorks/tests/testsupport"
 )
 
 // Use an explicitly selected, migrated test database. Fixtures use unique IDs
 // and are removed afterward; no existing workspace or account is modified.
 func TestOperationTransports(t *testing.T) {
-	dsn := os.Getenv("OPS_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set OPS_TEST_DATABASE_URL to a migrated PostgreSQL test database")
-	}
+	dsn := testsupport.DSN(t)
+
 	database, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)

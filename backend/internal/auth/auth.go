@@ -72,6 +72,7 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		},
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 		jwt.WithIssuer(accessTokenIssuer),
+		jwt.WithExpirationRequired(),
 	)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("parse JWT: %w", err)

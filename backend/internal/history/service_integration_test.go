@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -13,13 +12,12 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/kryptonn36/multiWorks/internal/board"
 	"github.com/kryptonn36/multiWorks/internal/ops"
+	"github.com/kryptonn36/multiWorks/tests/testsupport"
 )
 
 func TestHistoryRestoreAndSnapshots(t *testing.T) {
-	dsn := os.Getenv("OPS_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set OPS_TEST_DATABASE_URL to a migrated PostgreSQL test database")
-	}
+	dsn := testsupport.DSN(t)
+
 	database, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
