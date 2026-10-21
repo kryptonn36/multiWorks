@@ -5,6 +5,7 @@
 package db
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,30 @@ type ProjectMember struct {
 	UserID    uuid.UUID
 	Role      string
 	CreatedAt time.Time
+}
+
+type Scene struct {
+	ID          uuid.UUID
+	ProjectID   uuid.UUID
+	Title       string
+	Description string
+	Position    int32
+	CreatedBy   uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type Shot struct {
+	ID        uuid.UUID
+	SceneID   uuid.UUID
+	Prompt    string
+	Style     string
+	Notes     string
+	ImageUrl  sql.NullString
+	Position  int32
+	CreatedBy uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type User struct {

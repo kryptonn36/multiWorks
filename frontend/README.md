@@ -59,3 +59,18 @@ npm test
 ```
 
 The checks cover Go route coverage, all proxied endpoints, static assets, exact client request formats, automatic login after registration, token expiry, and API/network failures. Client/proxy tests use controlled responses and do not establish end-to-end correctness against PostgreSQL. There is no frontend build, lint, or typecheck script; the frontend serves native browser modules.
+
+## Test storyboard scenes and shots
+
+Open a workspace, then a project. Its default **Storyboard** tab uses real data; **People** contains project membership.
+
+1. **Create scenes:** Click Add scene; enter Title and Description. Submit a blank title to test the backend error, then create two valid scenes.
+2. **Edit scenes:** Click Edit scene. Change Title or Description; the corresponding Update checkbox is selected automatically. Only selected fields are sent. You can also select Position and enter `0`, a negative value, or an invalid value to test backend validation.
+3. **Create shots:** Click Add shot inside a scene. Enter Prompt, Style, and Notes. Leave No image checked to send null, or type an Image URL to preview an HTTP(S) image after saving. Add two shots to one scene.
+4. **Edit shots:** Click Edit on a shot and change only Prompt. Other fields remain unchanged unless their Update boxes are selected. Clearing the Image URL sends an empty string; the current backend does not clear existing image URLs with a null PATCH.
+5. **Reorder:** Scene and shot ↑ / ↓ buttons immediately save all IDs in the new order. Reload the page to verify persistence. Edit scene order / Edit shot order opens a list of IDs, one per line, which also lets you submit duplicates, missing IDs, invalid IDs, or an empty list to see backend errors.
+6. **Delete:** Click a shot's Delete button and confirm; other shots remain. Click Delete scene and confirm to delete that scene and its shots. Cancel sends no deletion request.
+7. **Permissions:** Add a second account to the workspace and project as Viewer. Its storyboard loads, and write controls remain visible; submitting a scene/shot change should show `editor or owner role required`. Change the account to Editor and retry; the backend should allow changes.
+8. **Reload / session:** Refresh the board or page to verify saved content and order. Expired/invalid sessions return to sign in. Stop the API and use Refresh to check the board error/retry state.
+
+No frontend business-validation rules are added. Submission buttons are disabled only while a request is pending. The existing Compose command builds both applications and applies the storyboard migration automatically on backend startup.

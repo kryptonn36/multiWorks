@@ -51,3 +51,27 @@ Verification for this change: backend tests and all 10 frontend tests passed. Li
 Missing workspace membership now returns an explicit backend message asking to add the user to the project's workspace first (status remains 404). The project member form includes a navigation link to workspace people. This is guidance only: submissions remain unrestricted, and workspace membership is not created automatically. Backend tests, frontend syntax, and diff checks passed for this clarification.
 
 Workspace-member action discoverability: explicit Add workspace member buttons now appear on both workspace tabs and on project pages, beside the separate Add project member action. The project member dialog also has an Add workspace member button that opens the workspace form with the typed email preserved. This only opens a form; requests are still submitted explicitly, and no prerequisite membership is created automatically. Live Chrome/PostgreSQL verification passed for button visibility, email preservation, saving workspace membership, and then saving project membership. No uncaught browser exceptions occurred; syntax and diff checks passed.
+
+## Storyboard integration
+
+Project pages now open a Storyboard tab, with existing membership under People. The new `storyboard.js` module reuses the existing API client, dialog, styling, and feedback. All nine operations carry the session bearer token and JSON content type through the same proxy.
+
+| UI action | Method and endpoint | Body / response |
+| --- | --- | --- |
+| Load / Refresh storyboard | `GET /api/projects/:projectID/board` | `{project_id,scenes:[{id,title,description,position,shots:[...]}]}` |
+| Add scene | `POST /api/projects/:projectID/scenes` | `{title,description}` → scene object |
+| Edit scene | `PATCH /api/projects/:projectID/scenes/:sceneID` | Selected fields from `{title,description,position}` → scene object |
+| Delete scene | `DELETE /api/projects/:projectID/scenes/:sceneID` | Deletes scene and cascading shots; confirmation dialog precedes request |
+| Scene ↑ / ↓ / Edit scene order | `PUT /api/projects/:projectID/scenes/order` | `{ids:[all scene IDs in desired order]}` |
+| Add shot | `POST /api/projects/:projectID/scenes/:sceneID/shots` | `{prompt,style,notes,image_url}` → shot object |
+| Edit shot | `PATCH /api/projects/:projectID/scenes/:sceneID/shots/:shotID` | Selected fields from `{prompt,style,notes,image_url,position}` → shot object |
+| Delete shot | `DELETE /api/projects/:projectID/scenes/:sceneID/shots/:shotID` | Deletes only that shot, after confirmation |
+| Shot ↑ / ↓ / Edit shot order | `PUT /api/projects/:projectID/scenes/:sceneID/shots/order` | `{ids:[all shot IDs for that scene]}` |
+
+Editing a field checks its Update checkbox automatically. Uncheck fields to omit them from PATCH, or submit no fields to test the backend's empty-update error. Position is a text input encoded as a JSON value when parsable, so negative/non-integer/string values still reach backend validation. Order dialogs accept arbitrary IDs, duplicates, and empty lists for backend validation tests. No controls are hidden by project role: the backend grants reads to project members and writes to owners/editors.
+
+Images are referenced by URL; there is no image generation or upload endpoint. Create shot has an explicit No image checkbox that sends `image_url:null`; typing an image URL unchecks it. Editing an image URL to an empty string sends that exact string. The current backend uses a pointer plus COALESCE for nullable PATCH fields: `image_url:null` cannot clear an existing URL and a null-only patch is rejected as an empty update. The UI does not claim otherwise. HTTP(S) image URLs are previewed; failed images show a placeholder without changing stored data.
+
+Successful mutations reload the board from the server. Load failures have a Retry button; validation/permission failures remain in the dialog; arrow-order failures appear above the board. There is no background polling or optimistic success data. No backend changes were needed for this UI integration.
+
+Storyboard verification: all 11 frontend tests passed, including coverage of all 23 registered routes, PATCH/PUT/DELETE proxy forwarding, nested scene/shot paths, bearer headers, and partial bodies. Existing backend tests passed. The Compose stack rebuilt successfully and applied the storyboard migration. Live Chrome tests against PostgreSQL covered all nine storyboard routes, empty board, invalid title/position errors, partial updates preserving untouched fields, null image creation, clearing an image with an empty string, persisted scene/shot order, invalid/duplicate order IDs, cancelled deletion, shot deletion, scene deletion with its shots, viewer write rejection, and editor write success. Desktop and 390px mobile layouts were inspected; no uncaught browser exceptions occurred. Test accounts and a workspace named `Storyboard verification …` remain in the local database. No existing user scenes/shots were changed or deleted.

@@ -1,4 +1,5 @@
 import { createClient } from './api.js';
+import { createStoryboard } from './storyboard.js';
 
 const $ = (selector) => document.querySelector(selector);
 const app = $('#app');
@@ -14,6 +15,7 @@ const api = createClient({ storage, onUnauthorized: () => {
   location.hash = '#/login'; renderAuth();
 } });
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+const storyboard = createStoryboard({ api, escape: esc, showForm, closeModal: () => modal.close(), toast });
 const date = (value) => value && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const initials = (name) => (name || '?').slice(0, 2).toUpperCase();
 const icons = { home: '⌂', workspaces: '▦', account: '◎', project: '◈', people: '♧' };
@@ -100,7 +102,9 @@ function renderWorkspace() {
 function renderProject() {
   const p = state.project;
   document.title = `${p.name} · MultiWorks`;
-  shell(`<a class="back-link" href="#/workspace/${esc(p.workspace_id)}">← ${esc(state.workspace.name)}</a>${heading('A PLACE TO MAKE PROGRESS', p.name, `Part of ${state.workspace.name}`, '<div class="heading-actions"><button class="secondary" data-action="add-workspace-member">+ Add workspace member</button><button class="primary" data-action="add-project-member">+ Add project member</button></div>')}<div class="project-facts"><div><span class="fact-icon">◈</span><div><small>Your access</small><strong>${esc(p.member_role)}</strong></div></div><div><span class="fact-icon">▦</span><div><small>Created</small><strong>${date(p.created_at)}</strong></div></div><div><span class="fact-icon">↗</span><div><small>Last updated</small><strong>${date(p.updated_at)}</strong></div></div><div><span class="fact-icon">♧</span><div><small>Collaborators</small><strong>${state.members.length} ${state.members.length === 1 ? 'person' : 'people'}</strong></div></div></div><section class="panel"><div class="section-heading"><div><h2>Project people</h2><p>A shared project starts with the right people.</p></div>${badge(p.member_role)}</div>${memberTable(state.members, 'project')}<p class="panel-note">The backend checks project membership permissions when you submit.</p></section>`, 'workspaces');
+  const peopleTab = route()[2] === 'members';
+  shell(`<a class="back-link" href="#/workspace/${esc(p.workspace_id)}">← ${esc(state.workspace.name)}</a>${heading('A PLACE TO MAKE PROGRESS', p.name, `Part of ${state.workspace.name}`, '<div class="heading-actions"><button class="secondary" data-action="add-workspace-member">+ Add workspace member</button><button class="primary" data-action="add-project-member">+ Add project member</button></div>')}<div class="project-facts"><div><span class="fact-icon">◈</span><div><small>Your access</small><strong>${esc(p.member_role)}</strong></div></div><div><span class="fact-icon">▦</span><div><small>Created</small><strong>${date(p.created_at)}</strong></div></div><div><span class="fact-icon">↗</span><div><small>Last updated</small><strong>${date(p.updated_at)}</strong></div></div><div><span class="fact-icon">♧</span><div><small>Collaborators</small><strong>${state.members.length} ${state.members.length === 1 ? 'person' : 'people'}</strong></div></div></div><div class="tabs"><a href="#/project/${esc(p.id)}" class="${!peopleTab ? 'active' : ''}">Storyboard</a><a href="#/project/${esc(p.id)}/members" class="${peopleTab ? 'active' : ''}">People <span>${state.members.length}</span></a></div>${peopleTab ? `<section class="panel"><div class="section-heading"><div><h2>Project people</h2><p>A shared project starts with the right people.</p></div>${badge(p.member_role)}</div>${memberTable(state.members, 'project')}<p class="panel-note">The backend checks project membership permissions when you submit.</p></section>` : '<section id="storyboard" aria-label="Project storyboard"></section>'}`, 'workspaces');
+  if (!peopleTab) storyboard.load(p.id);
 }
 function renderAccount() {
   document.title = 'My account · MultiWorks';
@@ -109,6 +113,7 @@ function renderAccount() {
 
 async function loadPage() {
   const thisVersion = ++version;
+  storyboard.dispose();
   modal.close();
   if (!api.authenticated) { state.mode = route()[0] === 'register' ? 'register' : 'login'; renderAuth(); return; }
   state.error = '';
@@ -200,6 +205,8 @@ function memberForm(type, userID, { email = '' } = {}) {
 }
 
 app.addEventListener('click', async (event) => {
+  const boardButton = event.target.closest('[data-board-action]');
+  if (boardButton) { await storyboard.handle(boardButton); return; }
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const action = button.dataset.action;
@@ -233,5 +240,8 @@ modal.addEventListener('click', (event) => {
   }
 });
 modal.addEventListener('cancel', (event) => { if ($('#modal-form')?.dataset.busy) event.preventDefault(); });
+app.addEventListener('error', (event) => {
+  if (event.target.matches?.('.shot-image')) { event.target.hidden = true; event.target.nextElementSibling.hidden = false; }
+}, true);
 window.addEventListener('hashchange', loadPage);
 loadPage();

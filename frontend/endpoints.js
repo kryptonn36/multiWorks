@@ -13,11 +13,20 @@ export const endpoints = [
   { id: 'project', group: 'Projects', title: 'Get project', method: 'GET', path: '/api/projects/:projectID', description: 'Retrieve a project accessible to the current user.' },
   { id: 'project-members', group: 'Projects', title: 'List members', method: 'GET', path: '/api/projects/:projectID/members', description: 'List the selected project’s members and roles.' },
   { id: 'add-project-member', group: 'Projects', title: 'Add member', method: 'POST', path: '/api/projects/:projectID/members', fields: ['email', 'role'], roles: ['viewer', 'editor'], description: 'Add a project member by email. The backend resolves the user ID and checks project ownership and workspace membership.' },
+  { id: 'board', group: 'Storyboard', method: 'GET', path: '/api/projects/:projectID/board' },
+  { id: 'create-scene', group: 'Storyboard', method: 'POST', path: '/api/projects/:projectID/scenes' },
+  { id: 'update-scene', group: 'Storyboard', method: 'PATCH', path: '/api/projects/:projectID/scenes/:sceneID' },
+  { id: 'delete-scene', group: 'Storyboard', method: 'DELETE', path: '/api/projects/:projectID/scenes/:sceneID' },
+  { id: 'order-scenes', group: 'Storyboard', method: 'PUT', path: '/api/projects/:projectID/scenes/order' },
+  { id: 'create-shot', group: 'Storyboard', method: 'POST', path: '/api/projects/:projectID/scenes/:sceneID/shots' },
+  { id: 'update-shot', group: 'Storyboard', method: 'PATCH', path: '/api/projects/:projectID/scenes/:sceneID/shots/:shotID' },
+  { id: 'delete-shot', group: 'Storyboard', method: 'DELETE', path: '/api/projects/:projectID/scenes/:sceneID/shots/:shotID' },
+  { id: 'order-shots', group: 'Storyboard', method: 'PUT', path: '/api/projects/:projectID/scenes/:sceneID/shots/order' },
 ];
 
 export function requestPath(endpoint, context) {
-  return endpoint.path.replace(/:(workspaceID|projectID)/g, (_, key) => {
-    if (!context[key]?.trim()) throw new Error(`Enter a ${key === 'workspaceID' ? 'workspace' : 'project'} ID in Request context first.`);
-    return encodeURIComponent(context[key].trim());
+  return endpoint.path.replace(/:([A-Za-z]+ID)/g, (_, key) => {
+    if (context[key] === undefined || context[key] === null) throw new Error(`Enter a ${key.replace('ID', '')} ID in Request context first.`);
+    return encodeURIComponent(String(context[key]));
   });
 }

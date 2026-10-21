@@ -84,3 +84,29 @@ test('membership inputs reach the backend unchanged, including invalid values', 
     await assert.rejects(client.request(id, { context: { workspaceID: 'workspace', projectID: 'project' }, body }), (error) => error.status === 400 && error.message === 'Backend validation rejected this input');
   }
 });
+
+test('storyboard requests use nested IDs, exact HTTP methods, bearer headers, and partial bodies', async () => {
+  const session = storage(); session.setItem('multiworks.token', 'storyboard-token');
+  const prefix = '/backend/api/projects/project-id';
+  const cases = [
+    ['board', 'GET', `${prefix}/board`, undefined],
+    ['create-scene', 'POST', `${prefix}/scenes`, { title: '', description: '  unchanged whitespace  ' }],
+    ['update-scene', 'PATCH', `${prefix}/scenes/scene-id`, { position: -1 }],
+    ['delete-scene', 'DELETE', `${prefix}/scenes/scene-id`, undefined],
+    ['order-scenes', 'PUT', `${prefix}/scenes/order`, { ids: ['scene-id', 'scene-id'] }],
+    ['create-shot', 'POST', `${prefix}/scenes/scene-id/shots`, { prompt: 'Rain', style: '', notes: '', image_url: null }],
+    ['update-shot', 'PATCH', `${prefix}/scenes/scene-id/shots/shot-id`, { prompt: 'Only this field' }],
+    ['delete-shot', 'DELETE', `${prefix}/scenes/scene-id/shots/shot-id`, undefined],
+    ['order-shots', 'PUT', `${prefix}/scenes/scene-id/shots/order`, { ids: [] }],
+  ];
+  for (const [id, method, path, body] of cases) {
+    const client = createClient({ storage: session, fetcher: async (actualPath, options) => {
+      assert.equal(actualPath, path); assert.equal(options.method, method);
+      assert.equal(options.headers.Authorization, 'Bearer storyboard-token');
+      assert.equal(options.headers['Content-Type'], 'application/json');
+      assert.deepEqual(options.body === undefined ? undefined : JSON.parse(options.body), body);
+      return json({ status: 'received' });
+    } });
+    await client.request(id, { context: { projectID: 'project-id', sceneID: 'scene-id', shotID: 'shot-id' }, body });
+  }
+});

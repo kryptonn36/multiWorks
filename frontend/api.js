@@ -15,9 +15,8 @@ export function createClient({ fetcher = globalThis.fetch, storage, onUnauthoriz
   async function request(id, { context = {}, body } = {}) {
     const endpoint = endpoints.find((item) => item.id === id);
     if (!endpoint) throw new Error('Unknown operation');
-    const headers = { Accept: 'application/json' };
+    const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
     const requestToken = token;
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (!endpoint.public && requestToken) headers.Authorization = `Bearer ${requestToken}`;
     let response;
     try {
