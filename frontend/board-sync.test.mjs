@@ -134,3 +134,27 @@ test('definitive backend rejection clears only the pending request and does not 
   await sync.initialize(); await assert.rejects(sync.submit('scene.create', { title: '' }, 'intent'), /editor or owner/);
   assert.equal(sync.lastSeq, 0); assert.equal(sync.pending, null); assert.equal(sync.board.scenes.length, 0);
 });
+
+test('live gaps buffer later operations, backfill via HTTP, and deduplicate overlapping replay', async () => {
+  let backfill = false;
+  const cursors = [];
+  const sync = engine(async (id, options) => {
+    if (id === 'board') return snapshot();
+    cursors.push(options.query.after_seq);
+    return backfill ? page([op(1), op(2)]) : page();
+  });
+  await sync.initialize(); backfill = true;
+  await sync.receive([op(3)]);
+  assert.equal(sync.lastSeq, 3);
+  await sync.receive([op(3), op(1), op(2)]);
+  assert.equal(sync.board.scenes.length, 3); assert.deepEqual(cursors, [0, 0]);
+});
+
+test('live reducer failures do not advance the cursor or lose later buffered operations', async () => {
+  const sync = engine(async (id) => id === 'board' ? snapshot() : page());
+  await sync.initialize();
+  await assert.rejects(sync.receive([op(1, 'unknown.type'), op(2)]), /Unsupported/);
+  assert.equal(sync.lastSeq, 0);
+  await sync.receive([op(1)]);
+  assert.equal(sync.lastSeq, 2);
+});

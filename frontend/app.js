@@ -10,12 +10,12 @@ let toastTimer;
 let storage;
 try { storage = sessionStorage; } catch { /* Session remains in memory. */ }
 const api = createClient({ storage, onUnauthorized: () => {
-  version++; state.user = null; state.mode = 'login'; state.workspaces = []; modal.close();
+  storyboard.dispose(); version++; state.user = null; state.mode = 'login'; state.workspaces = []; modal.close();
   state.error = 'Your session has expired. Please sign in again.';
   location.hash = '#/login'; renderAuth();
 } });
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const storyboard = createStoryboard({ api, escape: esc, showForm, closeModal: () => modal.close(), toast, storage, getUserID: () => state.user?.id || '' });
+const storyboard = createStoryboard({ api, escape: esc, showForm, closeModal: () => modal.close(), toast, storage, getUserID: () => state.user?.id || '', getMembers: () => state.members });
 const date = (value) => value && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const initials = (name) => (name || '?').slice(0, 2).toUpperCase();
 const icons = { home: '⌂', workspaces: '▦', account: '◎', project: '◈', people: '♧' };
@@ -212,7 +212,7 @@ app.addEventListener('click', async (event) => {
   const action = button.dataset.action;
   if (action === 'auth-switch') { if ($('#auth-form')?.dataset.busy) return; state.error = ''; state.mode = state.mode === 'login' ? 'register' : 'login'; location.hash = `#/${state.mode}`; }
   else if (action === 'toggle-password') { const input = $('[name="password"]'); input.type = input.type === 'password' ? 'text' : 'password'; button.textContent = input.type === 'password' ? 'Show' : 'Hide'; button.setAttribute('aria-label', `${button.textContent} password`); }
-  else if (action === 'sign-out') { api.signOut(); state.user = null; state.workspaces = []; state.error = ''; version++; navigate('login'); toast('You’ve signed out. See you soon.'); }
+  else if (action === 'sign-out') { storyboard.dispose(); api.signOut(); state.user = null; state.workspaces = []; state.error = ''; version++; navigate('login'); toast('You’ve signed out. See you soon.'); }
   else if (action === 'account') navigate('account');
   else if (action === 'retry') loadPage();
   else if (action === 'create-workspace') createWorkspace();

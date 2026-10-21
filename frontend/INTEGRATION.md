@@ -89,7 +89,7 @@ The former board response had no consistent watermark. GetBoard now reads `last_
 
 Create IDs and operation IDs are generated once per form intent. A per-tab client ID and exact pending envelope are stored in session storage (pending envelopes are scoped by account/project). Unknown network/5xx outcomes preserve the original key, base sequence, and payload. Retry pending write resends the same envelope; if already acknowledged, it only resumes replay. The request is cleared after replay confirms the acknowledged sequence, or on a definitive 4xx rejection before acknowledgment. New intents wait for an unresolved outcome. Navigation stops the old synchronizer; a fresh view bootstraps from a new complete snapshot. No standalone sequence is persisted without its board.
 
-The UI renders replayed results, not optimistic mock data. Sync changes is manual; successful writes also replay automatically. There is no health or replay timer. Existing auth/token handling and People views are retained.
+The UI renders replayed results, not optimistic mock data. WebSocket events now deliver changes automatically, while Sync changes remains a manual replay control. There is no health or replay polling timer. Existing auth/token handling and People views are retained.
 
 ### Backend changes needed for integration
 
@@ -106,3 +106,16 @@ All 21 frontend tests passed, covering all 17 current route registrations, repla
 Live Chrome testing against Compose/PostgreSQL used three independent clients and a new test project. It verified all eight operation types; rejected input without sequence allocation; a second client catching up using replay rather than GET board; an intervening remote write before a local acknowledgment; 101 updates fetched as pages after seq 12 then 112; dropped POST acknowledgments after server commit; retries with identical envelopes; pending shot recovery after a page reload; all eight legacy write URLs returning 404/405; 115 contiguous log sequences and exactly one row per idempotency key; and Viewer writes rejected without cursor advancement. Mobile layout fit the viewport, and there were no uncaught browser exceptions.
 
 Test accounts and a workspace named `Ops verification …` remain in the local database. Only that run's own test scenes/shots were deleted. Earlier Stage 4 test results do not establish operation-log behavior; the checks above were run against the new pipeline.
+
+
+## WebSocket integration
+
+`projectSocket.js` obtains a fresh ticket for every connection/reconnect, uses the existing Node proxy for upgrades, sends heartbeats and view_scene, and stops timers on disposal. `board-sync.js` buffers gaps and shares contiguous application between live messages and HTTP/socket replay. `storyboard.js` renders status and presence using membership emails/initials, refreshing membership names for previously unknown collaborators. The existing forms and REST operation submission remain unchanged.
+
+Backend additions: bearer-protected POST `/api/projects/:projectID/ws-ticket`, atomic hash-based ticket consumption (30 seconds; one use; project-bound), exact origin checks via FRONTEND_ORIGINS, and migration 00005. GET `/api/projects/:projectID/ws` uses ticket validation outside bearer middleware, then rechecks project membership. One writer drains the client queue; cancellation uses a separate Done channel so concurrent replay cannot panic by sending to a closed channel. Permission checks run independently of read deadlines, avoiding reuse of a failed Gorilla read. Multi-tab presence chooses the most recently active socket for each user.
+
+Verification: frontend tests cover fresh ticket reconnection, cursor/scene restoration, heartbeat/disposal cleanup, overlapping replay, buffered gaps, and reducer failure. Backend tests exercise origin validation and concurrent hub producers/disconnects with the race detector. See README.md for manual collaboration checks and deployment origin configuration.
+
+Live verification against Docker/PostgreSQL and two headless Chrome sessions passed: authenticated presence with email lookup, ticket reuse rejection, missing bearer rejection for issuance, unapproved origin rejection, JWT-free WebSocket URLs, immediate scene delivery, viewed-scene presence, idle/heartbeat stability, fresh-ticket reconnect with missed-operation recovery, and disconnect presence cleanup. The browser sessions reported no uncaught JavaScript exceptions. This does not test multiple API replicas; the hub remains process-local.
+
+The existing storyboard browser regression also passed with live delivery enabled: all eight operation types, partial updates, ordering and cascading deletion, lost-acknowledgment retry, pending-write recovery after reload, legacy write-route rejection, contiguous operation history, viewer write rejection, and mobile layout. Live redraws retain pending button states; deletion clears a now-missing viewed scene.

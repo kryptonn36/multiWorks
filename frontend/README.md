@@ -84,11 +84,11 @@ All storyboard mutations now use `POST /api/projects/:projectID/ops`. The old sc
 - **Applied sequence N** is the last operation successfully applied locally. **Sync changes** requests `ops?after_seq=N&limit=100`, applies operations in ascending order, and follows `has_more` using the actual last applied operation. `current_seq` is never used to skip operations.
 - Writes are displayed as successful only after their operations are replayed. There is no optimistic mutation or fallback to direct-write routes.
 - If a write's response is lost or its replay fails, close the form and click **Retry pending write**. It retries the same idempotency key, or only replay if the server already acknowledged the write. Pending envelopes survive reload in the same tab and are scoped by account and project. Editing another operation is deferred until the pending outcome is confirmed.
-- There is no background polling. Use Sync changes to pick up another client's edits; writes also synchronize automatically.
+- Live WebSocket events update other clients automatically. Sync changes remains available for manual replay; health and replay do not poll.
 
 ### Manual replay checks
 
-1. Open the same project in two independent tabs/sessions. Create or edit a scene/shot in the first, then click Sync changes in the second. Verify content and order match, and the applied sequence advances.
+1. Open the same project in two independent tabs/sessions. Create or edit a scene/shot in the first and watch it appear automatically in the second. Verify content and order match, and the applied sequence advances.
 2. In browser developer tools, verify storyboard writes only POST to `/ops`, with `{client_id,op_id,base_seq,type,payload}`. Create types include `scene_id`/`shot_id`. Scene order uses `payload.scene_ids`; shot order uses `payload.scene_id` and `payload.shot_ids`.
 3. Submit invalid fields or order IDs. The backend error should appear, with no new applied sequence. Submit a valid operation afterward to verify recovery.
 4. With more than 100 unseen operations, verify the network panel shows additional replay requests using the last operation from each page, rather than `current_seq`.
@@ -96,3 +96,16 @@ All storyboard mutations now use `POST /api/projects/:projectID/ops`. The old sc
 6. As a Viewer, load and synchronize the board, then submit a write. Expect the backend permission error with the cursor unchanged.
 
 `npm test` includes deterministic pagination, gap detection, failed reducer, acknowledgment, idempotency, reload recovery, and protocol tests. See INTEGRATION.md for the exact live checks performed.
+
+
+## WebSocket collaboration
+
+The project storyboard displays connection status and online members by email, with initials and their viewed scene. Click **View scene**, or open a scene/shot action, to update your viewed scene. Leaving the storyboard, switching projects, signing out, or receiving an authentication failure closes the connection and stops reconnect/heartbeat timers.
+
+The frontend obtains a fresh 30-second, single-use ticket with authenticated `POST /api/projects/:projectID/ws-ticket` for every connection attempt. It connects through the same-origin Node upgrade proxy at `/backend/api/projects/:projectID/ws?ticket=...&last_seen_seq=...`. The access JWT stays in HTTP bearer headers. Migration `00005_websocket_tickets.sql` is applied at backend startup; only ticket hashes are stored. Ticket consumption is atomic and project-bound, and membership is checked again when connecting and every five seconds while connected.
+
+Live events and replay share the same reducer and contiguous cursor. Later operations are buffered until HTTP replay fills a gap; duplicate replay/live overlap is ignored. Reconnect fetches a new ticket and requests replay from the actual applied cursor. Heartbeats run every 15 seconds; presence excludes stale connections after the backend TTL. All writes still use REST `/ops`.
+
+For a deployed frontend, set `FRONTEND_ORIGINS=https://your-frontend.example` (comma-separated exact origins) on the API; Compose forwards this environment variable. When unset, only local development origins are accepted. The built-in hub distributes events inside one API instance; multiple API replicas need shared broadcast infrastructure.
+
+To test, use two independent sessions for accounts that already belong to the workspace and project. Check that both emails appear online, edits arrive live, and View scene updates presence. Disconnect one session temporarily, edit in the other, and reconnect: the missed edits should appear once with a fresh ticket request. Navigate home or sign out and confirm that session disappears from the other presence list.

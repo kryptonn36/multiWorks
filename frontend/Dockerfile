@@ -2,7 +2,7 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-COPY --chown=node:node package.json server.mjs index.html app.js api.js endpoints.js storyboard.js board-sync.js styles.css ./
+COPY --chown=node:node package.json server.mjs index.html app.js api.js endpoints.js storyboard.js board-sync.js projectSocket.js styles.css ./
 
 ENV NODE_ENV=production
 ENV FRONTEND_HOST=0.0.0.0

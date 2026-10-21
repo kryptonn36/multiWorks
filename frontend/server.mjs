@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
@@ -8,6 +9,7 @@ const assets = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/api.js': ['api.js', 'text/javascript; charset=utf-8'],
+  '/projectSocket.js': ['projectSocket.js', 'text/javascript; charset=utf-8'],
   '/board-sync.js': ['board-sync.js', 'text/javascript; charset=utf-8'],
   '/storyboard.js': ['storyboard.js', 'text/javascript; charset=utf-8'],
   '/endpoints.js': ['endpoints.js', 'text/javascript; charset=utf-8'],
@@ -17,7 +19,7 @@ const assets = {
 export function createServer(target = process.env.API_TARGET || 'http://localhost:8080') {
   const upstream = new URL(target);
   if (!['http:', 'https:'].includes(upstream.protocol)) throw new Error('API_TARGET must use HTTP or HTTPS');
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     if (path.startsWith('/backend/')) {
       try {
@@ -62,6 +64,34 @@ export function createServer(target = process.env.API_TARGET || 'http://localhos
       res.writeHead(500); res.end('Could not load frontend asset');
     }
   });
+  server.on('upgrade', (req, socket, head) => {
+    const incoming = new URL(req.url, 'http://localhost');
+    if (!/^\/backend\/api\/projects\/[^/]+\/ws$/.test(incoming.pathname)) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return; }
+    const url = new URL(upstream);
+    url.pathname = incoming.pathname.slice('/backend'.length); url.search = incoming.search;
+    const headers = { ...req.headers, host: url.host };
+    delete headers.authorization;
+    const request = (url.protocol === 'https:' ? https : http).request(url, { method: 'GET', headers });
+    request.setTimeout(10000, () => request.destroy());
+    request.on('upgrade', (response, peer, upstreamHead) => {
+      request.setTimeout(0);
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\n${Object.entries(response.headers).map(([key, value]) => `${key}: ${value}`).join('\r\n')}\r\n\r\n`);
+      if (upstreamHead.length) socket.write(upstreamHead);
+      if (head.length) peer.write(head);
+      socket.on('error', () => peer.destroy()); peer.on('error', () => socket.destroy());
+      socket.on('close', () => peer.destroy()); peer.on('close', () => socket.destroy());
+      socket.pipe(peer); peer.pipe(socket);
+    });
+    request.on('response', (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => { const body = Buffer.concat(chunks); socket.end(`HTTP/1.1 ${response.statusCode} Rejected\r\nConnection: close\r\nContent-Length: ${body.length}\r\n\r\n${body}`); });
+    });
+    request.on('error', () => socket.destroy());
+    socket.on('close', () => request.destroy());
+    request.end();
+  });
+  return server;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(root, 'server.mjs')) {

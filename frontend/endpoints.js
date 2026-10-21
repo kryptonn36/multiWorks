@@ -13,6 +13,8 @@ export const endpoints = [
   { id: 'project', group: 'Projects', title: 'Get project', method: 'GET', path: '/api/projects/:projectID', description: 'Retrieve a project accessible to the current user.' },
   { id: 'project-members', group: 'Projects', title: 'List members', method: 'GET', path: '/api/projects/:projectID/members', description: 'List the selected project’s members and roles.' },
   { id: 'add-project-member', group: 'Projects', title: 'Add member', method: 'POST', path: '/api/projects/:projectID/members', fields: ['email', 'role'], roles: ['viewer', 'editor'], description: 'Add a project member by email. The backend resolves the user ID and checks project ownership and workspace membership.' },
+  { id: 'ws-ticket', method: 'POST', path: '/api/projects/:projectID/ws-ticket' },
+  { id: 'project-ws', method: 'GET', path: '/api/projects/:projectID/ws', transport: 'websocket' },
   { id: 'board', group: 'Storyboard', method: 'GET', path: '/api/projects/:projectID/board' },
   { id: 'submit-op', group: 'Storyboard', method: 'POST', path: '/api/projects/:projectID/ops' },
   { id: 'replay-ops', group: 'Storyboard', method: 'GET', path: '/api/projects/:projectID/ops' },

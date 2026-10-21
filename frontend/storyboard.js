@@ -1,9 +1,16 @@
+import { connectProjectSocket } from './projectSocket.js';
 import { createBoardSync, tabClientID } from './board-sync.js';
 
 // Storyboard UI shares the application's API client, modal, and feedback components.
-export function createStoryboard({ api, escape: esc, showForm, closeModal, toast, storage, getUserID = () => '' }) {
+export function createStoryboard({ api, escape: esc, showForm, closeModal, toast, storage, getUserID = () => '', getMembers = () => [] }) {
   let projectID = '';
   let synchronizer;
+  let socket;
+  let status = 'offline';
+  let presence = [];
+  let viewedScene = '';
+  let connectionError = '';
+  let memberLookup = [];
   const clientID = tabClientID(storage);
   let scenes = [];
   let revision = 0;
@@ -22,7 +29,51 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   }
   function render() {
     if (!root()) return;
-    root().innerHTML = `<div class="section-heading"><div><h2>Storyboard <span class="count">${scenes.length} scenes</span></h2><p>Plan your scenes, arrange your shots, and build your story.</p></div><div class="heading-actions">${synchronizer?.pending ? action('retry-write', 'Retry pending write') : ''}${action('reload', 'Sync changes')}${action('order-scenes', 'Edit scene order')}${action('create-scene', '+ Add scene', '', '', 'primary')}</div></div><p class="field-note"><span data-applied-seq="${synchronizer?.lastSeq ?? 0}">Applied sequence ${synchronizer?.lastSeq ?? 0}</span>. Owner/editor access is required for changes. All controls remain available so you can test backend permissions.</p>${scenes.length ? `<div class="scene-list">${scenes.map((scene, index) => `<section class="scene-card" data-scene-id="${esc(scene.id)}"><header class="scene-heading"><div><p class="eyebrow">SCENE ${index + 1} · POSITION ${esc(scene.position)}</p><h3>${esc(scene.title)}</h3><p class="scene-description">${esc(scene.description || 'No description yet.')}</p></div><div class="board-actions">${orderButtons('scene', scene.id)}${action('edit-scene', 'Edit scene', scene.id)}${action('delete-scene', 'Delete scene', scene.id, '', 'danger-button')}</div></header><div class="section-heading"><h4>${scene.shots.length} ${scene.shots.length === 1 ? 'shot' : 'shots'}</h4><div class="heading-actions">${action('order-shots', 'Edit shot order', scene.id)}${action('create-shot', '+ Add shot', scene.id, '', 'primary')}</div></div>${scene.shots.length ? `<div class="shot-grid">${scene.shots.map((shot, index) => shotCard(shot, index, scene)).join('')}</div>` : '<p class="board-empty">No shots in this scene. Add a shot to get started.</p>'}</section>`).join('')}</div>` : '<div class="empty"><span class="empty-symbol">◈</span><h3>Your story starts with a scene.</h3><p>Use Add scene to create the first scene in this project.</p></div>'}`;
+    root().innerHTML = `<div id="board-presence"></div><div class="section-heading"><div><h2>Storyboard <span class="count">${scenes.length} scenes</span></h2><p>Plan your scenes, arrange your shots, and build your story.</p></div><div class="heading-actions">${synchronizer?.pending ? action('retry-write', 'Retry pending write') : ''}${action('reload', 'Sync changes')}${action('order-scenes', 'Edit scene order')}${action('create-scene', '+ Add scene', '', '', 'primary')}</div></div><p class="field-note"><span data-applied-seq="${synchronizer?.lastSeq ?? 0}">Applied sequence ${synchronizer?.lastSeq ?? 0}</span>. Owner/editor access is required for changes. All controls remain available so you can test backend permissions.</p>${scenes.length ? `<div class="scene-list">${scenes.map((scene, index) => `<section class="scene-card" data-scene-id="${esc(scene.id)}"><header class="scene-heading"><div><p class="eyebrow">SCENE ${index + 1} · POSITION ${esc(scene.position)}</p><h3>${esc(scene.title)}</h3><p class="scene-description">${esc(scene.description || 'No description yet.')}</p></div><div class="board-actions">${action('view-scene', viewedScene === scene.id ? 'Viewing' : 'View scene', scene.id)}${orderButtons('scene', scene.id)}${action('edit-scene', 'Edit scene', scene.id)}${action('delete-scene', 'Delete scene', scene.id, '', 'danger-button')}</div></header><div class="section-heading"><h4>${scene.shots.length} ${scene.shots.length === 1 ? 'shot' : 'shots'}</h4><div class="heading-actions">${action('order-shots', 'Edit shot order', scene.id)}${action('create-shot', '+ Add shot', scene.id, '', 'primary')}</div></div>${scene.shots.length ? `<div class="shot-grid">${scene.shots.map((shot, index) => shotCard(shot, index, scene)).join('')}</div>` : '<p class="board-empty">No shots in this scene. Add a shot to get started.</p>'}</section>`).join('')}</div>` : '<div class="empty"><span class="empty-symbol">◈</span><h3>Your story starts with a scene.</h3><p>Use Add scene to create the first scene in this project.</p></div>'}`;
+    renderPresence();
+    root().querySelectorAll('[data-board-action]').forEach((button) => { button.disabled = busy; });
+  }
+  function renderPresence() {
+    const element = document.getElementById('board-presence');
+    if (!element) return;
+    const members = [...getMembers(), ...memberLookup];
+    element.innerHTML = `<div class="presence-bar" role="status"><span class="badge">${esc(status)}</span><span>${presence.length} online</span>${presence.map((person) => {
+      const member = members.find((m) => m.user_id === person.user_id || m.id === person.user_id);
+      const name = member?.email || member?.name || (person.user_id === getUserID() ? 'You' : 'Collaborator');
+      const scene = scenes.find((s) => s.id === person.scene_id);
+      return `<span class="presence-person"><span class="presence-avatar">${esc(name.slice(0, 2).toUpperCase())}</span>${esc(name)}${scene ? ` · ${esc(scene.title)}` : ''}</span>`;
+    }).join('')}</div>${connectionError ? `<div class="error-message" role="alert">${esc(connectionError)} Use Sync changes to retry replay.</div>` : ''}`;
+  }
+  function startSocket(current) {
+    if (socket || !current.board || current !== synchronizer) return;
+    const id = projectID;
+    socket = connectProjectSocket({
+      projectId: id,
+      getTicket: () => api.request('ws-ticket', { context: { projectID: id } }),
+      lastSeenSeq: () => current.lastSeq,
+      onStatus(next, error) {
+        if (current !== synchronizer) return;
+        status = next;
+        if (error) connectionError = error.message;
+        if (next !== 'online') presence = [];
+        renderPresence();
+      },
+      async onMessage(message) {
+        if (current !== synchronizer) return;
+        if (message.type === 'presence') {
+          presence = (message.users || []).filter((person) => person.connected);
+          renderPresence();
+          if (presence.some((person) => ![...getMembers(), ...memberLookup].some((m) => m.user_id === person.user_id || m.id === person.user_id))) {
+            const members = await api.request('project-members', { context: { projectID: id } });
+            if (current !== synchronizer) return;
+            memberLookup = Array.isArray(members) ? members : members.members || []; renderPresence();
+          }
+        } else if (message.type === 'operation' || message.type === 'replay') {
+          await current.receive(message.type === 'operation' ? [message.operation] : message.operations || [], { hasMore: Boolean(message.has_more) });
+          if (current === synchronizer) { connectionError = ''; renderPresence(); }
+        } else if (message.type === 'error') { throw new Error(message.message || 'WebSocket error.'); }
+      },
+    });
   }
   function showError(error) {
     if (!root()) return;
@@ -31,9 +82,10 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   }
   async function load(id = projectID) {
     if (id !== projectID || !synchronizer) {
+      socket?.close(); socket = null;
       synchronizer?.stop();
       projectID = id;
-      synchronizer = createBoardSync({ api, projectID: id, clientID, storage, userID: getUserID() });
+      synchronizer = createBoardSync({ api, projectID: id, clientID, storage, userID: getUserID(), onChange(board) { scenes = board.scenes; if (viewedScene && !scenes.some((scene) => scene.id === viewedScene)) { viewedScene = ''; socket?.viewScene(''); } render(); } });
     }
     const current = synchronizer;
     const requestRevision = ++revision;
@@ -42,15 +94,15 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
     try {
       if (!current.board) await current.initialize(); else await current.sync();
       if (current !== synchronizer || requestRevision !== revision || !root()) return;
-      scenes = current.board.scenes; render();
+      scenes = current.board.scenes; connectionError = ''; render(); startSocket(current);
     } catch (error) {
       if (current !== synchronizer || requestRevision !== revision || !root()) return;
-      if (current.board) { scenes = current.board.scenes; render(); }
+      if (current.board) { scenes = current.board.scenes; render(); startSocket(current); }
       else root().innerHTML = action('reload', 'Retry loading storyboard');
       showError(error);
     }
   }
-  function dispose() { synchronizer?.stop(); synchronizer = null; revision++; projectID = ''; scenes = []; busy = false; }
+  function dispose() { socket?.close(); socket = null; status = 'offline'; presence = []; viewedScene = ''; connectionError = ''; memberLookup = []; synchronizer?.stop(); synchronizer = null; revision++; projectID = ''; scenes = []; busy = false; }
   async function write(type, payload, opID, expectedProjectID) {
     const current = synchronizer;
     if (!current || projectID !== expectedProjectID) throw new Error('Storyboard view changed.');
@@ -135,6 +187,8 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
     const name = button.dataset.boardAction;
     const scene = scenes.find((item) => item.id === button.dataset.scene);
     const shot = scene?.shots.find((item) => item.id === button.dataset.shot);
+    if (scene) { viewedScene = scene.id; socket?.viewScene(scene.id); }
+    if (name === 'view-scene') { render(); return; }
     if (name === 'create-scene') return sceneForm();
     if (name === 'edit-scene' && scene) return sceneForm(scene);
     if (name === 'create-shot' && scene) return shotForm(scene);

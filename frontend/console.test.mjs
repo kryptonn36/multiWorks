@@ -21,7 +21,7 @@ test('frontend route definitions cover every registered Go route', async () => {
   const prefixes = { router: '', publicAuth: '/api/auth', protectedAuth: '/api/auth', api: '/api' };
   const routes = [...source.matchAll(/(router|publicAuth|protectedAuth|api)\.(GET|POST|PATCH|PUT|DELETE)\(\s*"([^"]+)"/g)]
     .map(([, group, method, path]) => `${method} ${prefixes[group]}${path}`).sort();
-  assert.equal(routes.length, 17);
+  assert.equal(routes.length, 19);
   assert.deepEqual(endpoints.map((e) => `${e.method} ${e.path}`).sort(), routes);
 });
 
@@ -45,13 +45,13 @@ test('local server serves assets and proxies API requests, bodies, tokens, and e
   t.after(() => close(frontend));
   t.after(() => close(backend));
   const base = await listen(frontend);
-  for (const path of ['/', '/app.js', '/api.js', '/endpoints.js', '/storyboard.js', '/board-sync.js', '/styles.css']) {
+  for (const path of ['/', '/app.js', '/api.js', '/endpoints.js', '/storyboard.js', '/board-sync.js', '/projectSocket.js', '/styles.css']) {
     const response = await fetch(`${base}${path}`);
     assert.equal(response.status, 200);
     assert.ok((await response.text()).length > 0);
   }
   assert.deepEqual(await (await fetch(`${base}/config`)).json(), { target: backendURL });
-  for (const endpoint of endpoints) {
+  for (const endpoint of endpoints.filter((e) => e.transport !== 'websocket')) {
     const path = requestPath(endpoint, { workspaceID: 'workspace-test', projectID: 'project-test', sceneID: 'scene-test', shotID: 'shot-test' });
     const body = ['POST', 'PATCH', 'PUT'].includes(endpoint.method) ? JSON.stringify({ name: 'Test', email: 'user@example.com', role: 'viewer', ids: ['scene-test'] }) : undefined;
     const response = await fetch(`${base}/backend${path}`, {

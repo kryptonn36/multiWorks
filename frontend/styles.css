@@ -221,3 +221,7 @@ textarea:focus { border-color: #6aa684; box-shadow: 0 0 0 3px #2075530c; }
 #storyboard>.field-note { margin-bottom: 24px; }
 @media(max-width: 850px) { .scene-heading { flex-direction: column; } }
 @media(max-width: 650px) { .scene-card { padding: 17px; }.shot-grid { grid-template-columns: 1fr; }#storyboard .heading-actions button { padding: 9px 12px; font-size: 11px; } }
+
+.presence-bar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:18px; font-size:13px; }
+.presence-person { display:inline-flex; align-items:center; gap:6px; overflow-wrap:anywhere; }
+.presence-avatar { display:inline-grid; place-items:center; width:28px; height:28px; border-radius:50%; background:#e5f1e9; color:var(--green); font-size:10px; }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -11,12 +12,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/kryptonn36/multiWorks/internal/auth"
 	"github.com/kryptonn36/multiWorks/internal/config"
 	"github.com/kryptonn36/multiWorks/internal/db"
 	"github.com/kryptonn36/multiWorks/internal/ops"
 	"github.com/kryptonn36/multiWorks/internal/project"
 	"github.com/kryptonn36/multiWorks/internal/storyboard"
+	"github.com/kryptonn36/multiWorks/internal/websocket"
 	"github.com/kryptonn36/multiWorks/internal/workspace"
 )
 
@@ -47,7 +50,26 @@ func main() {
 	workspaceHandler := workspace.NewHandler(database)
 	projectHandler := project.NewHandler(database)
 	storyboardHandler := storyboard.NewHandler(database)
+	// opsHandler := ops.NewHandler(database)
+
+	// WEBSOCKET  connection
+
+	hub := websocket.NewHub()
+	websocketHandler := websocket.NewHandler(database, hub)
 	opsHandler := ops.NewHandler(database)
+
+	opsHandler.SetPublisher(func(projectID uuid.UUID, operation ops.Operation) {
+		raw, err := json.Marshal(operation)
+		if err != nil {
+			return
+		}
+
+		hub.Broadcast(projectID, websocket.ServerMessage{
+			Type:      "operation",
+			Seq:       operation.Seq,
+			Operation: raw,
+		})
+	})
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
@@ -118,7 +140,9 @@ func main() {
 	api.GET("/projects/:projectID/board", storyboardHandler.GetBoard)
 
 	// All storyboard mutations go through the operation transaction below.
-	// OPERATIONS
+	// OPERATIONS and WEBSOCKET
+	api.POST("/projects/:projectID/ws-ticket", websocketHandler.IssueTicket)
+	router.GET("/api/projects/:projectID/ws", websocketHandler.Connect)
 	api.POST("/projects/:projectID/ops", opsHandler.Submit)
 	api.GET("/projects/:projectID/ops", opsHandler.Replay)
 

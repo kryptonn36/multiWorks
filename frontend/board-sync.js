@@ -69,7 +69,7 @@ export function tabClientID(storage) {
   }
   return id;
 }
-export function createBoardSync({ api, projectID, clientID, storage, userID = '', pageSize = 100 }) {
+export function createBoardSync({ api, projectID, clientID, storage, userID = '', pageSize = 100, onChange = () => {} }) {
   const storageKey = `multiworks.ops.pending.${userID}.${projectID}`;
   let board = null;
   let lastSeq = 0;
@@ -77,6 +77,7 @@ export function createBoardSync({ api, projectID, clientID, storage, userID = ''
   let syncing;
   let writing = false;
   let pending = null;
+  const buffered = new Map();
   try { pending = JSON.parse(storage?.getItem(storageKey) || 'null'); } catch { /* Invalid/unavailable storage. */ }
   function persist() {
     try { pending ? storage?.setItem(storageKey, JSON.stringify(pending)) : storage?.removeItem(storageKey); } catch { /* Retry remains available in memory. */ }
@@ -100,21 +101,36 @@ export function createBoardSync({ api, projectID, clientID, storage, userID = ''
       const page = await api.request('replay-ops', { context: { projectID }, query: { after_seq: lastSeq, limit: pageSize } });
       active();
       if (!Array.isArray(page.operations) || typeof page.has_more !== 'boolean') throw new Error('Invalid replay response.');
-      const operations = [...page.operations].sort((a, b) => sequence(a.seq) - sequence(b.seq));
-      for (const operation of operations) {
-        if (operation.project_id !== projectID) throw new Error('Replay returned an operation for a different project.');
-        const seq = sequence(operation.seq);
-        if (seq <= lastSeq) continue;
-        if (seq !== lastSeq + 1) throw new Error(`Replay gap: expected sequence ${lastSeq + 1}, received ${seq}.`);
-        const next = applyBoardOperation(board, operation);
-        // A failed reducer leaves both board and cursor at the previous operation.
-        next.last_seq = seq;
-        board = next;
-        lastSeq = seq;
+      ingest(page.operations);
+      if (!page.has_more) {
+        if (buffered.size) throw new Error(`Replay gap: expected sequence ${lastSeq + 1}.`);
+        return;
       }
-      if (!page.has_more) return;
       if (lastSeq === beforePage) throw new Error('Replay made no progress despite has_more.');
     }
+  }
+  function ingest(operations) {
+    active();
+    if (!board) throw new Error('Load a board snapshot before replay.');
+    if (!Array.isArray(operations)) throw new Error('Invalid operations message.');
+    for (const operation of [...operations].sort((a, b) => sequence(a.seq) - sequence(b.seq))) {
+      if (operation.project_id !== projectID) throw new Error('Replay returned an operation for a different project.');
+      const seq = sequence(operation.seq);
+      if (seq > lastSeq) buffered.set(seq, operation);
+    }
+    let changed = false;
+    try {
+      while (buffered.has(lastSeq + 1)) {
+        const seq = lastSeq + 1;
+        const next = applyBoardOperation(board, buffered.get(seq));
+        next.last_seq = seq;
+        board = next; lastSeq = seq; buffered.delete(seq); changed = true;
+      }
+    } finally { if (changed) onChange(board); }
+  }
+  async function receive(operations, { hasMore = false } = {}) {
+    ingest(operations);
+    if (buffered.size || hasMore) await sync();
   }
   function sync() {
     if (syncing) return syncing;
@@ -161,5 +177,5 @@ export function createBoardSync({ api, projectID, clientID, storage, userID = ''
       throw error;
     } finally { writing = false; }
   }
-  return { initialize, sync, submit, retry, stop: () => { stopped = true; }, get board() { return board; }, get lastSeq() { return lastSeq; }, get pending() { return pending; } };
+  return { initialize, sync, receive, submit, retry, stop: () => { stopped = true; }, get board() { return board; }, get lastSeq() { return lastSeq; }, get pending() { return pending; } };
 }

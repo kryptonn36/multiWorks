@@ -14,7 +14,8 @@ import (
 )
 
 type Handler struct {
-	database *sql.DB
+    database  *sql.DB
+    publisher func(projectID uuid.UUID, operation Operation)
 }
 
 func NewHandler(database *sql.DB) *Handler {
@@ -32,6 +33,12 @@ type payload struct {
 	ImageURL    *string  `json:"image_url"`
 	SceneIDs    []string `json:"scene_ids"`
 	ShotIDs     []string `json:"shot_ids"`
+}
+
+func (h *Handler) SetPublisher(
+    publisher func(projectID uuid.UUID, operation Operation),
+) {
+    h.publisher = publisher
 }
 
 func fail(c *gin.Context, status int, message string) {
@@ -295,6 +302,10 @@ func (h *Handler) Submit(c *gin.Context) {
 	if err := tx.Commit(); err != nil {
 		fail(c, http.StatusInternalServerError, "could not commit operation")
 		return
+	}
+
+	if h.publisher != nil {
+		h.publisher(projectID, op)
 	}
 
 	c.JSON(http.StatusCreated, SubmitResponse{
