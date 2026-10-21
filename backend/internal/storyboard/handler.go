@@ -1,4 +1,3 @@
-
 package storyboard
 
 import (
@@ -175,7 +174,24 @@ func (h *Handler) GetBoard(c *gin.Context) {
 		return
 	}
 
-	rows, err := h.database.QueryContext(
+	// Keep the board and its sequence watermark in one read-only snapshot.
+	// Reading last_seq separately from the board could skip concurrent writes.
+	tx, err := h.database.BeginTx(c.Request.Context(), &sql.TxOptions{
+		Isolation: sql.LevelRepeatableRead,
+		ReadOnly:  true,
+	})
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "could not start board snapshot")
+		return
+	}
+	defer tx.Rollback()
+	var lastSeq int64
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT last_seq FROM projects WHERE id = $1", projectID).Scan(&lastSeq); err != nil {
+		respondError(c, http.StatusInternalServerError, "could not load board sequence")
+		return
+	}
+
+	rows, err := tx.QueryContext(
 		c.Request.Context(),
 		`
 		SELECT s.id, s.project_id, s.title, s.description, s.position,
@@ -236,7 +252,7 @@ func (h *Handler) GetBoard(c *gin.Context) {
 		return
 	}
 
-	shotRows, err := h.database.QueryContext(
+	shotRows, err := tx.QueryContext(
 		c.Request.Context(),
 		`
 		SELECT s.id, s.scene_id, s.prompt, s.style, s.notes,
@@ -299,8 +315,14 @@ func (h *Handler) GetBoard(c *gin.Context) {
 		return
 	}
 
+	if err := tx.Commit(); err != nil {
+		respondError(c, http.StatusInternalServerError, "could not finish board snapshot")
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"project_id": projectID,
+		"last_seq":   lastSeq,
 		"scenes":     scenes,
 	})
 }

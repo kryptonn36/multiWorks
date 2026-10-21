@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -15,9 +14,10 @@ import (
 	"github.com/kryptonn36/multiWorks/internal/auth"
 	"github.com/kryptonn36/multiWorks/internal/config"
 	"github.com/kryptonn36/multiWorks/internal/db"
+	"github.com/kryptonn36/multiWorks/internal/ops"
 	"github.com/kryptonn36/multiWorks/internal/project"
-	"github.com/kryptonn36/multiWorks/internal/workspace"
 	"github.com/kryptonn36/multiWorks/internal/storyboard"
+	"github.com/kryptonn36/multiWorks/internal/workspace"
 )
 
 func main() {
@@ -47,6 +47,7 @@ func main() {
 	workspaceHandler := workspace.NewHandler(database)
 	projectHandler := project.NewHandler(database)
 	storyboardHandler := storyboard.NewHandler(database)
+	opsHandler := ops.NewHandler(database)
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
@@ -116,29 +117,10 @@ func main() {
 	// Storyboard
 	api.GET("/projects/:projectID/board", storyboardHandler.GetBoard)
 
-	// Scenes
-	api.POST("/projects/:projectID/scenes", storyboardHandler.CreateScene)
-	api.PATCH("/projects/:projectID/scenes/:sceneID", storyboardHandler.UpdateScene)
-	api.DELETE("/projects/:projectID/scenes/:sceneID", storyboardHandler.DeleteScene)
-	api.PUT("/projects/:projectID/scenes/order", storyboardHandler.ReorderScenes)
-
-	// Shots
-	api.POST(
-		"/projects/:projectID/scenes/:sceneID/shots",
-		storyboardHandler.CreateShot,
-	)
-	api.PATCH(
-		"/projects/:projectID/scenes/:sceneID/shots/:shotID",
-		storyboardHandler.UpdateShot,
-	)
-	api.DELETE(
-		"/projects/:projectID/scenes/:sceneID/shots/:shotID",
-		storyboardHandler.DeleteShot,
-	)
-	api.PUT(
-		"/projects/:projectID/scenes/:sceneID/shots/order",
-		storyboardHandler.ReorderShots,
-)
+	// All storyboard mutations go through the operation transaction below.
+	// OPERATIONS
+	api.POST("/projects/:projectID/ops", opsHandler.Submit)
+	api.GET("/projects/:projectID/ops", opsHandler.Replay)
 
 	server := &http.Server{
 		Addr:              cfg.Port,

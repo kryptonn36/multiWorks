@@ -15,7 +15,7 @@ const api = createClient({ storage, onUnauthorized: () => {
   location.hash = '#/login'; renderAuth();
 } });
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const storyboard = createStoryboard({ api, escape: esc, showForm, closeModal: () => modal.close(), toast });
+const storyboard = createStoryboard({ api, escape: esc, showForm, closeModal: () => modal.close(), toast, storage, getUserID: () => state.user?.id || '' });
 const date = (value) => value && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const initials = (name) => (name || '?').slice(0, 2).toUpperCase();
 const icons = { home: '⌂', workspaces: '▦', account: '◎', project: '◈', people: '♧' };

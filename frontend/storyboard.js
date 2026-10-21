@@ -1,6 +1,10 @@
+import { createBoardSync, tabClientID } from './board-sync.js';
+
 // Storyboard UI shares the application's API client, modal, and feedback components.
-export function createStoryboard({ api, escape: esc, showForm, closeModal, toast }) {
+export function createStoryboard({ api, escape: esc, showForm, closeModal, toast, storage, getUserID = () => '' }) {
   let projectID = '';
+  let synchronizer;
+  const clientID = tabClientID(storage);
   let scenes = [];
   let revision = 0;
   let busy = false;
@@ -18,23 +22,41 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   }
   function render() {
     if (!root()) return;
-    root().innerHTML = `<div class="section-heading"><div><h2>Storyboard <span class="count">${scenes.length} scenes</span></h2><p>Plan your scenes, arrange your shots, and build your story.</p></div><div class="heading-actions">${action('reload', 'Refresh')}${action('order-scenes', 'Edit scene order')}${action('create-scene', '+ Add scene', '', '', 'primary')}</div></div><p class="field-note">Owner/editor access is required for changes. All controls remain available so you can test backend permissions.</p>${scenes.length ? `<div class="scene-list">${scenes.map((scene, index) => `<section class="scene-card" data-scene-id="${esc(scene.id)}"><header class="scene-heading"><div><p class="eyebrow">SCENE ${index + 1} · POSITION ${esc(scene.position)}</p><h3>${esc(scene.title)}</h3><p class="scene-description">${esc(scene.description || 'No description yet.')}</p></div><div class="board-actions">${orderButtons('scene', scene.id)}${action('edit-scene', 'Edit scene', scene.id)}${action('delete-scene', 'Delete scene', scene.id, '', 'danger-button')}</div></header><div class="section-heading"><h4>${scene.shots.length} ${scene.shots.length === 1 ? 'shot' : 'shots'}</h4><div class="heading-actions">${action('order-shots', 'Edit shot order', scene.id)}${action('create-shot', '+ Add shot', scene.id, '', 'primary')}</div></div>${scene.shots.length ? `<div class="shot-grid">${scene.shots.map((shot, index) => shotCard(shot, index, scene)).join('')}</div>` : '<p class="board-empty">No shots in this scene. Add a shot to get started.</p>'}</section>`).join('')}</div>` : '<div class="empty"><span class="empty-symbol">◈</span><h3>Your story starts with a scene.</h3><p>Use Add scene to create the first scene in this project.</p></div>'}`;
+    root().innerHTML = `<div class="section-heading"><div><h2>Storyboard <span class="count">${scenes.length} scenes</span></h2><p>Plan your scenes, arrange your shots, and build your story.</p></div><div class="heading-actions">${synchronizer?.pending ? action('retry-write', 'Retry pending write') : ''}${action('reload', 'Sync changes')}${action('order-scenes', 'Edit scene order')}${action('create-scene', '+ Add scene', '', '', 'primary')}</div></div><p class="field-note"><span data-applied-seq="${synchronizer?.lastSeq ?? 0}">Applied sequence ${synchronizer?.lastSeq ?? 0}</span>. Owner/editor access is required for changes. All controls remain available so you can test backend permissions.</p>${scenes.length ? `<div class="scene-list">${scenes.map((scene, index) => `<section class="scene-card" data-scene-id="${esc(scene.id)}"><header class="scene-heading"><div><p class="eyebrow">SCENE ${index + 1} · POSITION ${esc(scene.position)}</p><h3>${esc(scene.title)}</h3><p class="scene-description">${esc(scene.description || 'No description yet.')}</p></div><div class="board-actions">${orderButtons('scene', scene.id)}${action('edit-scene', 'Edit scene', scene.id)}${action('delete-scene', 'Delete scene', scene.id, '', 'danger-button')}</div></header><div class="section-heading"><h4>${scene.shots.length} ${scene.shots.length === 1 ? 'shot' : 'shots'}</h4><div class="heading-actions">${action('order-shots', 'Edit shot order', scene.id)}${action('create-shot', '+ Add shot', scene.id, '', 'primary')}</div></div>${scene.shots.length ? `<div class="shot-grid">${scene.shots.map((shot, index) => shotCard(shot, index, scene)).join('')}</div>` : '<p class="board-empty">No shots in this scene. Add a shot to get started.</p>'}</section>`).join('')}</div>` : '<div class="empty"><span class="empty-symbol">◈</span><h3>Your story starts with a scene.</h3><p>Use Add scene to create the first scene in this project.</p></div>'}`;
+  }
+  function showError(error) {
+    if (!root()) return;
+    const message = document.createElement('div'); message.className = 'error-message'; message.setAttribute('role', 'alert'); message.textContent = error.message;
+    root().prepend(message);
   }
   async function load(id = projectID) {
-    projectID = id;
+    if (id !== projectID || !synchronizer) {
+      synchronizer?.stop();
+      projectID = id;
+      synchronizer = createBoardSync({ api, projectID: id, clientID, storage, userID: getUserID() });
+    }
+    const current = synchronizer;
     const requestRevision = ++revision;
     if (!root()) return;
-    root().innerHTML = '<div class="loading-screen" role="status"><span class="spinner"></span> Loading storyboard…</div>';
+    root().innerHTML = '<div class="loading-screen" role="status"><span class="spinner"></span> Synchronizing storyboard…</div>';
     try {
-      const board = await api.request('board', { context: { projectID: id } });
-      if (requestRevision !== revision || !root()) return;
-      scenes = board.scenes; render();
+      if (!current.board) await current.initialize(); else await current.sync();
+      if (current !== synchronizer || requestRevision !== revision || !root()) return;
+      scenes = current.board.scenes; render();
     } catch (error) {
-      if (requestRevision !== revision || !root()) return;
-      root().innerHTML = `<div class="error-message" role="alert">${esc(error.message)}</div>${action('reload', 'Retry loading storyboard')}`;
+      if (current !== synchronizer || requestRevision !== revision || !root()) return;
+      if (current.board) { scenes = current.board.scenes; render(); }
+      else root().innerHTML = action('reload', 'Retry loading storyboard');
+      showError(error);
     }
   }
-  function dispose() { revision++; projectID = ''; scenes = []; busy = false; }
+  function dispose() { synchronizer?.stop(); synchronizer = null; revision++; projectID = ''; scenes = []; busy = false; }
+  async function write(type, payload, opID, expectedProjectID) {
+    const current = synchronizer;
+    if (!current || projectID !== expectedProjectID) throw new Error('Storyboard view changed.');
+    try { await current.submit(type, payload, opID); }
+    finally { if (current === synchronizer && current.board && root()) { scenes = current.board.scenes; render(); } }
+  }
   const checkbox = (name, label) => `<label class="patch-option"><input type="checkbox" name="include-${name}">Update ${label}</label>`;
   function field(name, label, value = '', { multiline = false, patch = false } = {}) {
     const id = `board-field-${name}`;
@@ -45,51 +67,56 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
       input.addEventListener('input', () => { const checkbox = document.querySelector(`#modal-form [name="include-${input.name}"]`); if (checkbox) checkbox.checked = true; });
     });
   }
-  // Encode JSON numbers for position without rejecting invalid input locally.
-  function positionValue(value) { try { return JSON.parse(value); } catch { return value; } }
   function sceneForm(scene) {
     const requestContext = context(scene?.id);
     const patch = Boolean(scene);
-    const fields = field('title', 'Title', scene?.title, { patch }) + field('description', 'Description', scene?.description, { multiline: true, patch }) + (patch ? field('position', 'Position', scene.position, { patch }) : '');
+    const opID = crypto.randomUUID();
+    const sceneID = scene?.id || crypto.randomUUID();
+    const fields = field('title', 'Title', scene?.title, { patch }) + field('description', 'Description', scene?.description, { multiline: true, patch });
     showForm(patch ? 'Edit scene' : 'Add scene', patch ? 'Changed fields are selected automatically. Uncheck a field to leave it unchanged.' : 'Give the next part of your story a title and description.', fields, patch ? 'Save scene' : 'Create scene', async (values) => {
       const body = {};
-      for (const name of ['title', 'description', ...(patch ? ['position'] : [])]) {
-        if (!patch || values[`include-${name}`]) body[name] = name === 'position' ? positionValue(values[name]) : values[name];
+      for (const name of ['title', 'description']) {
+        if (!patch || values[`include-${name}`]) body[name] = values[name];
       }
-      await api.request(patch ? 'update-scene' : 'create-scene', { context: requestContext, body });
-      closeModal(); await load(requestContext.projectID); toast(patch ? 'Scene updated.' : 'Scene created.');
+      await write(patch ? 'scene.update' : 'scene.create', { scene_id: sceneID, ...body }, opID, requestContext.projectID);
+      closeModal(); toast(patch ? 'Scene updated.' : 'Scene created.');
     });
     if (patch) watchPatch();
   }
   function shotForm(scene, shot) {
     const requestContext = context(scene.id, shot?.id);
     const patch = Boolean(shot);
-    const fields = field('prompt', 'Prompt', shot?.prompt, { multiline: true, patch }) + field('style', 'Style', shot?.style, { patch }) + field('notes', 'Notes', shot?.notes, { multiline: true, patch }) + field('image_url', 'Image URL', shot?.image_url || '', { patch }) + (!patch ? '<label class="patch-option"><input type="checkbox" name="null-image" checked>No image (send null)</label>' : '<p class="field-note">Clear the Image URL field to remove its displayed image. A null update does not clear URLs in the current backend.</p>') + (patch ? field('position', 'Position', shot.position, { patch }) : '');
+    const opID = crypto.randomUUID();
+    const shotID = shot?.id || crypto.randomUUID();
+    const fields = field('prompt', 'Prompt', shot?.prompt, { multiline: true, patch }) + field('style', 'Style', shot?.style, { patch }) + field('notes', 'Notes', shot?.notes, { multiline: true, patch }) + field('image_url', 'Image URL', shot?.image_url || '', { patch }) + (!patch ? '<label class="patch-option"><input type="checkbox" name="null-image" checked>No image (send null)</label>' : '<p class="field-note">Clear the Image URL field to remove its displayed image. A null update does not clear URLs in the current backend.</p>');
     showForm(patch ? 'Edit shot' : 'Add shot', patch ? 'Only selected fields are sent. Editing a field selects it automatically.' : `Add a shot to ${esc(scene.title)}.`, fields, patch ? 'Save shot' : 'Create shot', async (values) => {
       const body = {};
-      for (const name of ['prompt', 'style', 'notes', 'image_url', ...(patch ? ['position'] : [])]) {
-        if (!patch || values[`include-${name}`]) body[name] = name === 'position' ? positionValue(values[name]) : name === 'image_url' && !patch && values['null-image'] ? null : values[name];
+      for (const name of ['prompt', 'style', 'notes', 'image_url']) {
+        if (!patch || values[`include-${name}`]) body[name] = name === 'image_url' && !patch && values['null-image'] ? null : values[name];
       }
-      await api.request(patch ? 'update-shot' : 'create-shot', { context: requestContext, body });
-      closeModal(); await load(requestContext.projectID); toast(patch ? 'Shot updated.' : 'Shot created.');
+      await write(patch ? 'shot.update' : 'shot.create', { scene_id: scene.id, shot_id: shotID, ...body }, opID, requestContext.projectID);
+      closeModal(); toast(patch ? 'Shot updated.' : 'Shot created.');
     });
     if (patch) watchPatch();
     else document.querySelector('#modal-form [name="image_url"]').addEventListener('input', () => { document.querySelector('#modal-form [name="null-image"]').checked = false; });
   }
   function deleteForm(scene, shot) {
     const requestContext = context(scene.id, shot?.id);
+    const opID = crypto.randomUUID();
     showForm(shot ? 'Delete this shot?' : 'Delete this scene?', shot ? 'This shot will be permanently removed.' : `“${esc(scene.title)}” and all ${scene.shots.length} of its shots will be permanently removed.`, '', shot ? 'Delete shot' : 'Delete scene', async () => {
-      await api.request(shot ? 'delete-shot' : 'delete-scene', { context: requestContext });
-      closeModal(); await load(requestContext.projectID); toast(shot ? 'Shot deleted.' : 'Scene and its shots deleted.');
+      await write(shot ? 'shot.delete' : 'scene.delete', { scene_id: scene.id, ...(shot ? { shot_id: shot.id } : {}) }, opID, requestContext.projectID);
+      closeModal(); toast(shot ? 'Shot deleted.' : 'Scene and its shots deleted.');
     });
     document.querySelector('#modal-form [type="submit"]').className = 'danger-button';
   }
   function orderForm(scene) {
     const requestContext = context(scene?.id);
     const items = scene ? scene.shots : scenes;
+    const opID = crypto.randomUUID();
     showForm(scene ? 'Edit shot order' : 'Edit scene order', 'Each line is one ID in the desired order. The backend checks completeness, duplicates, and access.', `<p class="field-note">${items.map((item) => esc(item.title || item.prompt || 'Untitled')).join(' → ') || 'No items yet.'}</p>${field('ids', 'IDs in order (one per line)', items.map((item) => item.id).join('\n'), { multiline: true })}`, 'Save order', async ({ ids }) => {
-      await api.request(scene ? 'order-shots' : 'order-scenes', { context: requestContext, body: { ids: ids === '' ? [] : ids.split('\n') } });
-      closeModal(); await load(requestContext.projectID); toast('Order saved.');
+      const orderedIDs = ids === '' ? [] : ids.split('\n');
+      await write(scene ? 'shot.reorder' : 'scene.reorder', scene ? { scene_id: scene.id, shot_ids: orderedIDs } : { scene_ids: orderedIDs }, opID, requestContext.projectID);
+      closeModal(); toast('Order saved.');
     });
   }
   async function move(scene, shot, direction) {
@@ -100,8 +127,8 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
     // At a list boundary the order is unchanged, but the request still tests permissions.
     const ids = items.map((item) => item.id);
     if (destination >= 0 && destination < ids.length) [ids[index], ids[destination]] = [ids[destination], ids[index]];
-    await api.request(shot ? 'order-shots' : 'order-scenes', { context: requestContext, body: { ids } });
-    await load(requestContext.projectID); toast('Order saved.');
+    await write(shot ? 'shot.reorder' : 'scene.reorder', shot ? { scene_id: scene.id, shot_ids: ids } : { scene_ids: ids }, crypto.randomUUID(), requestContext.projectID);
+    toast('Order saved.');
   }
   async function handle(button) {
     if (busy) return;
@@ -121,6 +148,7 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
     const actionRevision = revision;
     try {
       if (name === 'reload') await load();
+      else if (name === 'retry-write') { await synchronizer.retry(); scenes = synchronizer.board.scenes; render(); toast('Pending write confirmed and replayed.'); }
       else if (name.endsWith('-up') || name.endsWith('-down')) await move(scene, shot, name.endsWith('-up') ? -1 : 1);
     } catch (error) {
       if (actionRevision === revision && root()) {

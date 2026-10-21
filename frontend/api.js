@@ -12,7 +12,7 @@ export function createClient({ fetcher = globalThis.fetch, storage, onUnauthoriz
     token = value;
     try { value ? storage?.setItem('multiworks.token', value) : storage?.removeItem('multiworks.token'); } catch { /* Storage is optional. */ }
   }
-  async function request(id, { context = {}, body } = {}) {
+  async function request(id, { context = {}, body, query } = {}) {
     const endpoint = endpoints.find((item) => item.id === id);
     if (!endpoint) throw new Error('Unknown operation');
     const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
@@ -20,7 +20,8 @@ export function createClient({ fetcher = globalThis.fetch, storage, onUnauthoriz
     if (!endpoint.public && requestToken) headers.Authorization = `Bearer ${requestToken}`;
     let response;
     try {
-      response = await fetcher(`/backend${requestPath(endpoint, context)}`, {
+      const search = query ? `?${new URLSearchParams(query)}` : '';
+      response = await fetcher(`/backend${requestPath(endpoint, context)}${search}`, {
         method: endpoint.method, headers,
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(35000),

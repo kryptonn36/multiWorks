@@ -52,26 +52,57 @@ Missing workspace membership now returns an explicit backend message asking to a
 
 Workspace-member action discoverability: explicit Add workspace member buttons now appear on both workspace tabs and on project pages, beside the separate Add project member action. The project member dialog also has an Add workspace member button that opens the workspace form with the typed email preserved. This only opens a form; requests are still submitted explicitly, and no prerequisite membership is created automatically. Live Chrome/PostgreSQL verification passed for button visibility, email preservation, saving workspace membership, and then saving project membership. No uncaught browser exceptions occurred; syntax and diff checks passed.
 
-## Storyboard integration
+## Storyboard operation integration (current)
 
-Project pages now open a Storyboard tab, with existing membership under People. The new `storyboard.js` module reuses the existing API client, dialog, styling, and feedback. All nine operations carry the session bearer token and JSON content type through the same proxy.
+The board remains at `GET /api/projects/:projectID/board`, and every storyboard mutation is now submitted to `POST /api/projects/:projectID/ops`:
 
-| UI action | Method and endpoint | Body / response |
+```json
+{
+  "client_id": "stable-tab-id",
+  "op_id": "stable-intent-id",
+  "base_seq": 12,
+  "type": "shot.update",
+  "payload": {"scene_id": "scene-uuid", "shot_id": "shot-uuid", "prompt": "New prompt"}
+}
+```
+
+| UI action | Operation type | Payload |
 | --- | --- | --- |
-| Load / Refresh storyboard | `GET /api/projects/:projectID/board` | `{project_id,scenes:[{id,title,description,position,shots:[...]}]}` |
-| Add scene | `POST /api/projects/:projectID/scenes` | `{title,description}` → scene object |
-| Edit scene | `PATCH /api/projects/:projectID/scenes/:sceneID` | Selected fields from `{title,description,position}` → scene object |
-| Delete scene | `DELETE /api/projects/:projectID/scenes/:sceneID` | Deletes scene and cascading shots; confirmation dialog precedes request |
-| Scene ↑ / ↓ / Edit scene order | `PUT /api/projects/:projectID/scenes/order` | `{ids:[all scene IDs in desired order]}` |
-| Add shot | `POST /api/projects/:projectID/scenes/:sceneID/shots` | `{prompt,style,notes,image_url}` → shot object |
-| Edit shot | `PATCH /api/projects/:projectID/scenes/:sceneID/shots/:shotID` | Selected fields from `{prompt,style,notes,image_url,position}` → shot object |
-| Delete shot | `DELETE /api/projects/:projectID/scenes/:sceneID/shots/:shotID` | Deletes only that shot, after confirmation |
-| Shot ↑ / ↓ / Edit shot order | `PUT /api/projects/:projectID/scenes/:sceneID/shots/order` | `{ids:[all shot IDs for that scene]}` |
+| Add scene | `scene.create` | `{scene_id,title,description}` |
+| Edit scene | `scene.update` | `{scene_id,...selected title/description fields}` |
+| Delete scene | `scene.delete` | `{scene_id}`; also removes its shots |
+| Scene ↑ / ↓ / Edit order | `scene.reorder` | `{scene_ids:[all IDs in order]}` |
+| Add shot | `shot.create` | `{scene_id,shot_id,prompt,style,notes,image_url}` |
+| Edit shot | `shot.update` | `{scene_id,shot_id,...selected prompt/style/notes/image_url fields}` |
+| Delete shot | `shot.delete` | `{scene_id,shot_id}` |
+| Shot ↑ / ↓ / Edit order | `shot.reorder` | `{scene_id,shot_ids:[all IDs in order]}` |
 
-Editing a field checks its Update checkbox automatically. Uncheck fields to omit them from PATCH, or submit no fields to test the backend's empty-update error. Position is a text input encoded as a JSON value when parsable, so negative/non-integer/string values still reach backend validation. Order dialogs accept arbitrary IDs, duplicates, and empty lists for backend validation tests. No controls are hidden by project role: the backend grants reads to project members and writes to owners/editors.
+Fields are sent as entered. Forms retain `novalidate`, free-text roles, and visible controls regardless of role. Position fields were removed from edit dialogs because the operation payload has no position update; reordering uses complete ID arrays. Image null remains an explicit create choice; an empty string clears a displayed image. Null update fields follow the existing backend pointer semantics (unchanged).
 
-Images are referenced by URL; there is no image generation or upload endpoint. Create shot has an explicit No image checkbox that sends `image_url:null`; typing an image URL unchecks it. Editing an image URL to an empty string sends that exact string. The current backend uses a pointer plus COALESCE for nullable PATCH fields: `image_url:null` cannot clear an existing URL and a null-only patch is rejected as an empty update. The UI does not claim otherwise. HTTP(S) image URLs are previewed; failed images show a placeholder without changing stored data.
+### Bootstrap and cursor correctness
 
-Successful mutations reload the board from the server. Load failures have a Retry button; validation/permission failures remain in the dialog; arrow-order failures appear above the board. There is no background polling or optimistic success data. No backend changes were needed for this UI integration.
+The former board response had no consistent watermark. GetBoard now reads `last_seq`, scenes, and shots inside one read-only REPEATABLE READ transaction, returning `{project_id,last_seq,scenes}`. The frontend installs that complete snapshot before setting its initial cursor. This does not infer state from a replay response's `current_seq` or a separately fetched project sequence. It also preserves existing Stage 4 rows that predate the operation log.
 
-Storyboard verification: all 11 frontend tests passed, including coverage of all 23 registered routes, PATCH/PUT/DELETE proxy forwarding, nested scene/shot paths, bearer headers, and partial bodies. Existing backend tests passed. The Compose stack rebuilt successfully and applied the storyboard migration. Live Chrome tests against PostgreSQL covered all nine storyboard routes, empty board, invalid title/position errors, partial updates preserving untouched fields, null image creation, clearing an image with an empty string, persisted scene/shot order, invalid/duplicate order IDs, cancelled deletion, shot deletion, scene deletion with its shots, viewer write rejection, and editor write success. Desktop and 390px mobile layouts were inspected; no uncaught browser exceptions occurred. Test accounts and a workspace named `Storyboard verification …` remain in the local database. No existing user scenes/shots were changed or deleted.
+`board-sync.js` then requests `GET /api/projects/:projectID/ops?after_seq=LAST_APPLIED&limit=100`. It sorts returned operations ascending, ignores already-applied overlap, and requires contiguous new sequences. Each reducer applies to a copy; only successful application replaces local state and advances the cursor. A failed application leaves earlier successful operations applied and retries from that cursor. `has_more` pages use the actual last applied seq. Empty pages, future `current_seq`, and POST acknowledgements never advance the cursor by themselves. Gaps, invalid pages, unknown operation types, or pagination without progress show an error instead of skipping history.
+
+### Idempotency and lifecycle
+
+Create IDs and operation IDs are generated once per form intent. A per-tab client ID and exact pending envelope are stored in session storage (pending envelopes are scoped by account/project). Unknown network/5xx outcomes preserve the original key, base sequence, and payload. Retry pending write resends the same envelope; if already acknowledged, it only resumes replay. The request is cleared after replay confirms the acknowledged sequence, or on a definitive 4xx rejection before acknowledgment. New intents wait for an unresolved outcome. Navigation stops the old synchronizer; a fresh view bootstraps from a new complete snapshot. No standalone sequence is persisted without its board.
+
+The UI renders replayed results, not optimistic mock data. Sync changes is manual; successful writes also replay automatically. There is no health or replay timer. Existing auth/token handling and People views are retained.
+
+### Backend changes needed for integration
+
+- Removed all eight direct storyboard write route registrations. GET board and GET/POST ops remain active. Legacy handler definitions remain unregistered.
+- Audited sequence/log writes: only ops.Submit increments `projects.last_seq` and inserts `project_ops`, inside the same project-row-locked transaction as the mutation.
+- Fixed scene.create to reject a missing/invalid title or oversized description rather than dereferencing a nil title.
+- Fixed shot.create to validate `scene_id`, check that scene, and insert the supplied `shot_id`. Previously it treated shot_id as scene_id and inserted an unrelated generated UUID, making valid creation and replay inconsistent.
+- Added the atomic board checkpoint described above. No new migration or schema change was needed beyond the user's existing operation-log migration.
+
+### Verification
+
+All 21 frontend tests passed, covering all 17 current route registrations, replay query forwarding, exact envelopes, ordered pagination, overlapping records, gaps, reducer failures, partial fields, duplicate-safe retries, post acknowledgment versus applied cursor, saved pending requests after reload, and permission rejections. Backend tests passed, including the nil-title regression test. JavaScript syntax and diff checks passed.
+
+Live Chrome testing against Compose/PostgreSQL used three independent clients and a new test project. It verified all eight operation types; rejected input without sequence allocation; a second client catching up using replay rather than GET board; an intervening remote write before a local acknowledgment; 101 updates fetched as pages after seq 12 then 112; dropped POST acknowledgments after server commit; retries with identical envelopes; pending shot recovery after a page reload; all eight legacy write URLs returning 404/405; 115 contiguous log sequences and exactly one row per idempotency key; and Viewer writes rejected without cursor advancement. Mobile layout fit the viewport, and there were no uncaught browser exceptions.
+
+Test accounts and a workspace named `Ops verification …` remain in the local database. Only that run's own test scenes/shots were deleted. Earlier Stage 4 test results do not establish operation-log behavior; the checks above were run against the new pipeline.

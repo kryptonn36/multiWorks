@@ -47,11 +47,11 @@ API_TARGET=http://localhost:9090 FRONTEND_PORT=5174 npm run dev
 8. **Permissions:** In the second account, open the shared workspace/project. Member actions remain available to every signed-in user who can open the page; submit them to exercise the backend's permission checks. For example, an ordinary workspace member's attempt to add a workspace member should return 403. Owners can also submit role changes for owner rows to observe the backend's owner-preservation behavior.
 9. **Expired session / unavailable pages:** Let the token expire (15 minutes), then navigate to a protected page; expect sign in and a session-expired message. To exercise 404, change a workspace or project ID in the browser hash to an unknown UUID; expect an unavailable/access message. Stop the API and navigate or submit a form to verify a readable failure state and retry button. Restart the API afterward.
 
-All forms use `novalidate`. There are no frontend required/length/email/UUID checks, role restrictions, or automatic input trimming; values are sent as entered. Suggestions are optional and backend errors are shown as returned. Requests disable the submitting button while pending; dialogs display validation/API errors and stay open on failure. Successful creation opens the new detail page. Membership changes refresh people lists and show a confirmation. Passwords are never persisted; only the access token is stored in this tab’s session storage. Sign out clears it. There is no backend logout/refresh route.
+All forms use `novalidate`. There are no frontend required/length/email/UUID checks, role restrictions, or automatic input trimming; values are sent as entered. Suggestions are optional and backend errors are shown as returned. Requests disable the submitting button while pending; dialogs display validation/API errors and stay open on failure. Successful creation opens the new detail page. Membership changes refresh people lists and show a confirmation. Passwords are never persisted; the access token, operation client ID, and any pending operation envelope are stored in this tab’s session storage. Sign out clears it. There is no backend logout/refresh route.
 
 ## Integration details and checks
 
-[INTEGRATION.md](INTEGRATION.md) maps every implemented endpoint, exact request/response contract, permissions, UI location, and backend limitations. Project membership now accepts `{email, role}`, matching workspace membership; IDs remain internal to the backend. Unsupported rename/delete/content editing controls are not present.
+[INTEGRATION.md](INTEGRATION.md) maps every implemented endpoint, exact request/response contract, permissions, UI location, and backend limitations. Project membership now accepts `{email, role}`, matching workspace membership; IDs remain internal to the backend. Workspace/project rename and deletion are not implemented; storyboard scene/shot editing and deletion are supported through the operation log.
 
 ```sh
 cd frontend
@@ -65,12 +65,34 @@ The checks cover Go route coverage, all proxied endpoints, static assets, exact 
 Open a workspace, then a project. Its default **Storyboard** tab uses real data; **People** contains project membership.
 
 1. **Create scenes:** Click Add scene; enter Title and Description. Submit a blank title to test the backend error, then create two valid scenes.
-2. **Edit scenes:** Click Edit scene. Change Title or Description; the corresponding Update checkbox is selected automatically. Only selected fields are sent. You can also select Position and enter `0`, a negative value, or an invalid value to test backend validation.
+2. **Edit scenes:** Click Edit scene. Change Title or Description; the corresponding Update checkbox is selected automatically. Only selected fields are sent. Use the order controls to change positions; the operation API does not support a position field on scene/shot updates.
 3. **Create shots:** Click Add shot inside a scene. Enter Prompt, Style, and Notes. Leave No image checked to send null, or type an Image URL to preview an HTTP(S) image after saving. Add two shots to one scene.
-4. **Edit shots:** Click Edit on a shot and change only Prompt. Other fields remain unchanged unless their Update boxes are selected. Clearing the Image URL sends an empty string; the current backend does not clear existing image URLs with a null PATCH.
+4. **Edit shots:** Click Edit on a shot and change only Prompt. Other fields remain unchanged unless their Update boxes are selected. Clearing the Image URL sends an empty string; the current backend does not clear existing image URLs with a null update operation.
 5. **Reorder:** Scene and shot ↑ / ↓ buttons immediately save all IDs in the new order. Reload the page to verify persistence. Edit scene order / Edit shot order opens a list of IDs, one per line, which also lets you submit duplicates, missing IDs, invalid IDs, or an empty list to see backend errors.
 6. **Delete:** Click a shot's Delete button and confirm; other shots remain. Click Delete scene and confirm to delete that scene and its shots. Cancel sends no deletion request.
 7. **Permissions:** Add a second account to the workspace and project as Viewer. Its storyboard loads, and write controls remain visible; submitting a scene/shot change should show `editor or owner role required`. Change the account to Editor and retry; the backend should allow changes.
-8. **Reload / session:** Refresh the board or page to verify saved content and order. Expired/invalid sessions return to sign in. Stop the API and use Refresh to check the board error/retry state.
+8. **Reload / session:** Click Sync changes to replay operations received since the last applied sequence, or reload the page to load a fresh consistent board snapshot. Expired/invalid sessions return to sign in. Stop the API and use Sync changes to check the board error/retry state.
 
 No frontend business-validation rules are added. Submission buttons are disabled only while a request is pending. The existing Compose command builds both applications and applies the storyboard migration automatically on backend startup.
+
+## Operation log and replay
+
+All storyboard mutations now use `POST /api/projects/:projectID/ops`. The old scene/shot POST, PATCH, DELETE, and PUT route registrations were removed. Workspace/project creation and membership keep their existing APIs.
+
+- Each form intent gets a stable `op_id`; each browser tab has a `client_id`. New scenes/shots get client-generated UUIDs. Unknown write outcomes retain the exact envelope (including the original `base_seq` and IDs) for retry.
+- Initial board loading returns `{project_id,last_seq,scenes}` from one read-only REPEATABLE READ transaction. This complete snapshot is the only sequence bootstrap. A cursor is never restored without its corresponding state.
+- **Applied sequence N** is the last operation successfully applied locally. **Sync changes** requests `ops?after_seq=N&limit=100`, applies operations in ascending order, and follows `has_more` using the actual last applied operation. `current_seq` is never used to skip operations.
+- Writes are displayed as successful only after their operations are replayed. There is no optimistic mutation or fallback to direct-write routes.
+- If a write's response is lost or its replay fails, close the form and click **Retry pending write**. It retries the same idempotency key, or only replay if the server already acknowledged the write. Pending envelopes survive reload in the same tab and are scoped by account and project. Editing another operation is deferred until the pending outcome is confirmed.
+- There is no background polling. Use Sync changes to pick up another client's edits; writes also synchronize automatically.
+
+### Manual replay checks
+
+1. Open the same project in two independent tabs/sessions. Create or edit a scene/shot in the first, then click Sync changes in the second. Verify content and order match, and the applied sequence advances.
+2. In browser developer tools, verify storyboard writes only POST to `/ops`, with `{client_id,op_id,base_seq,type,payload}`. Create types include `scene_id`/`shot_id`. Scene order uses `payload.scene_ids`; shot order uses `payload.scene_id` and `payload.shot_ids`.
+3. Submit invalid fields or order IDs. The backend error should appear, with no new applied sequence. Submit a valid operation afterward to verify recovery.
+4. With more than 100 unseen operations, verify the network panel shows additional replay requests using the last operation from each page, rather than `current_seq`.
+5. For uncertain-write testing, interrupt a POST response after it reaches the server. Close the form, click Retry pending write, and verify the original keys/body are reused and the entity/log row appears only once. Reloading the same tab also preserves the pending request. Simply going offline before submission tests a network failure but does not establish that the server committed.
+6. As a Viewer, load and synchronize the board, then submit a write. Expect the backend permission error with the cursor unchanged.
+
+`npm test` includes deterministic pagination, gap detection, failed reducer, acknowledgment, idempotency, reload recovery, and protocol tests. See INTEGRATION.md for the exact live checks performed.

@@ -21,7 +21,7 @@ test('frontend route definitions cover every registered Go route', async () => {
   const prefixes = { router: '', publicAuth: '/api/auth', protectedAuth: '/api/auth', api: '/api' };
   const routes = [...source.matchAll(/(router|publicAuth|protectedAuth|api)\.(GET|POST|PATCH|PUT|DELETE)\(\s*"([^"]+)"/g)]
     .map(([, group, method, path]) => `${method} ${prefixes[group]}${path}`).sort();
-  assert.equal(routes.length, 23);
+  assert.equal(routes.length, 17);
   assert.deepEqual(endpoints.map((e) => `${e.method} ${e.path}`).sort(), routes);
 });
 
@@ -45,7 +45,7 @@ test('local server serves assets and proxies API requests, bodies, tokens, and e
   t.after(() => close(frontend));
   t.after(() => close(backend));
   const base = await listen(frontend);
-  for (const path of ['/', '/app.js', '/api.js', '/endpoints.js', '/storyboard.js', '/styles.css']) {
+  for (const path of ['/', '/app.js', '/api.js', '/endpoints.js', '/storyboard.js', '/board-sync.js', '/styles.css']) {
     const response = await fetch(`${base}${path}`);
     assert.equal(response.status, 200);
     assert.ok((await response.text()).length > 0);
@@ -62,6 +62,7 @@ test('local server serves assets and proxies API requests, bodies, tokens, and e
     assert.equal((await response.json()).received, path);
     assert.deepEqual(requests.at(-1), { path, method: endpoint.method, authorization: 'Bearer test-token', body: body || '' });
   }
+  assert.equal((await (await fetch(`${base}/backend/api/projects/project/ops?after_seq=7&limit=1`)).json()).received, '/api/projects/project/ops?after_seq=7&limit=1');
   assert.equal((await fetch(`${base}/.env`)).status, 404);
   assert.equal((await fetch(`${base}/server.mjs`)).status, 404);
   const unauthorized = await fetch(`${base}/backend/api/auth/me`);

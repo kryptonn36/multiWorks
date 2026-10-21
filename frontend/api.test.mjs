@@ -85,28 +85,19 @@ test('membership inputs reach the backend unchanged, including invalid values', 
   }
 });
 
-test('storyboard requests use nested IDs, exact HTTP methods, bearer headers, and partial bodies', async () => {
-  const session = storage(); session.setItem('multiworks.token', 'storyboard-token');
-  const prefix = '/backend/api/projects/project-id';
-  const cases = [
-    ['board', 'GET', `${prefix}/board`, undefined],
-    ['create-scene', 'POST', `${prefix}/scenes`, { title: '', description: '  unchanged whitespace  ' }],
-    ['update-scene', 'PATCH', `${prefix}/scenes/scene-id`, { position: -1 }],
-    ['delete-scene', 'DELETE', `${prefix}/scenes/scene-id`, undefined],
-    ['order-scenes', 'PUT', `${prefix}/scenes/order`, { ids: ['scene-id', 'scene-id'] }],
-    ['create-shot', 'POST', `${prefix}/scenes/scene-id/shots`, { prompt: 'Rain', style: '', notes: '', image_url: null }],
-    ['update-shot', 'PATCH', `${prefix}/scenes/scene-id/shots/shot-id`, { prompt: 'Only this field' }],
-    ['delete-shot', 'DELETE', `${prefix}/scenes/scene-id/shots/shot-id`, undefined],
-    ['order-shots', 'PUT', `${prefix}/scenes/scene-id/shots/order`, { ids: [] }],
-  ];
-  for (const [id, method, path, body] of cases) {
-    const client = createClient({ storage: session, fetcher: async (actualPath, options) => {
-      assert.equal(actualPath, path); assert.equal(options.method, method);
-      assert.equal(options.headers.Authorization, 'Bearer storyboard-token');
-      assert.equal(options.headers['Content-Type'], 'application/json');
-      assert.deepEqual(options.body === undefined ? undefined : JSON.parse(options.body), body);
-      return json({ status: 'received' });
-    } });
-    await client.request(id, { context: { projectID: 'project-id', sceneID: 'scene-id', shotID: 'shot-id' }, body });
-  }
+test('operation requests send envelopes and replay cursors without direct storyboard writes', async () => {
+  const session = storage(); session.setItem('multiworks.token', 'ops-token');
+  const calls = [];
+  const client = createClient({ storage: session, fetcher: async (path, options) => {
+    calls.push({ path, options });
+    assert.equal(options.headers.Authorization, 'Bearer ops-token');
+    return json({ status: 'received' });
+  } });
+  const body = { client_id: 'client', op_id: 'intent', base_seq: 3, type: 'scene.update', payload: { scene_id: 'scene', title: '' } };
+  await client.request('submit-op', { context: { projectID: 'project' }, body });
+  await client.request('replay-ops', { context: { projectID: 'project' }, query: { after_seq: 3, limit: 100 } });
+  assert.equal(calls[0].path, '/backend/api/projects/project/ops');
+  assert.equal(calls[0].options.method, 'POST'); assert.deepEqual(JSON.parse(calls[0].options.body), body);
+  assert.equal(calls[1].path, '/backend/api/projects/project/ops?after_seq=3&limit=100');
+  assert.equal(calls[1].options.method, 'GET'); assert.equal(calls[1].options.body, undefined);
 });
