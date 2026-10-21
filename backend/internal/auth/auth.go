@@ -2,8 +2,8 @@ package auth
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -13,81 +13,93 @@ import (
 	"github.com/google/uuid"
 )
 
-func HashPassword(password string) (string,error) {
-	hashed_paswd, err := argon2id.CreateHash(password, argon2id.DefaultParams)
-	if err!=nil{
-		return "",err
-	}
-	return hashed_paswd, nil
+const accessTokenIssuer = "multiworks-api"
+
+func HashPassword(password string) (string, error) {
+	return argon2id.CreateHash(password, argon2id.DefaultParams)
 }
 
-func CheckPasswordHash(password, hash string) (bool, error){
-	boolean, err := argon2id.ComparePasswordAndHash(password,hash)
-	if err!= nil{
-		return false,err
-	}
-	return boolean,nil
+func CheckPasswordHash(password, hash string) (bool, error) {
+	return argon2id.ComparePasswordAndHash(password, hash)
 }
 
-func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error){
+func MakeJWT(
+	userID uuid.UUID,
+	tokenSecret string,
+	expiresIn time.Duration,
+) (string, error) {
+	if userID == uuid.Nil {
+		return "", fmt.Errorf("user ID must not be empty")
+	}
+	if len(tokenSecret) < 32 {
+		return "", fmt.Errorf("JWT secret must be at least 32 bytes")
+	}
+	if expiresIn <= 0 {
+		return "", fmt.Errorf("token expiry must be positive")
+	}
+
+	now := time.Now()
+
 	claims := jwt.RegisteredClaims{
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
-		Issuer: "chirpy-access",
-		IssuedAt: jwt.NewNumericDate(time.Now()),
-		Subject: userID.String(),
+		ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
+		IssuedAt:  jwt.NewNumericDate(now),
+		Issuer:    accessTokenIssuer,
+		Subject:   userID.String(),
 	}
-	newJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := newJwt.SignedString([]byte(tokenSecret))
-	if err!=nil{
-		return "", err
-	}
-	return tokenString, err
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(tokenSecret))
 }
 
-func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error){
-	claims := &jwt.RegisteredClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token)(interface{}, error){
-		if _,ok:= token.Method.(*jwt.SigningMethodHMAC); !ok{
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return []byte(tokenSecret), nil
-	})
-	if err != nil {
-		return uuid.Nil, err
+func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
+	if tokenString == "" {
+		return uuid.Nil, fmt.Errorf("token must not be empty")
+	}
+	if len(tokenSecret) < 32 {
+		return uuid.Nil, fmt.Errorf("JWT secret must be at least 32 bytes")
 	}
 
+	claims := &jwt.RegisteredClaims{}
+
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		claims,
+		func(token *jwt.Token) (any, error) {
+			if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+				return nil, fmt.Errorf("unexpected signing algorithm")
+			}
+			return []byte(tokenSecret), nil
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(accessTokenIssuer),
+	)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("parse JWT: %w", err)
+	}
 	if !token.Valid {
 		return uuid.Nil, fmt.Errorf("invalid token")
 	}
 
-	// Extract user ID from Subject
 	userID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		return uuid.Nil, err
+	if err != nil || userID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("invalid user ID in token")
 	}
 
 	return userID, nil
 }
 
 func GetBearerToken(headers http.Header) (string, error) {
-	authHeader := headers.Get("Authorization")
-	if authHeader == "" {
-		return "", fmt.Errorf("authorization header does not exist")
+	values := strings.Fields(headers.Get("Authorization"))
+	if len(values) != 2 || !strings.EqualFold(values[0], "Bearer") {
+		return "", fmt.Errorf("expected Authorization: Bearer <token>")
 	}
-
-	const prefix = "Bearer "
-
-	if !strings.HasPrefix(authHeader, prefix) {
-		return "", fmt.Errorf("malformed authorization header")
-	}
-
-	token := strings.TrimPrefix(authHeader, prefix)
-	return token, nil
+	return values[1], nil
 }
 
-func MakeRefreshToken() (string, error){
+func MakeRefreshToken() (string, error) {
 	key := make([]byte, 32)
-	rand.Read(key)
-	hexStr := hex.EncodeToString(key)
-	return hexStr,nil
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return "", fmt.Errorf("generate refresh token: %w", err)
+	}
+	return fmt.Sprintf("%x", key), nil
 }

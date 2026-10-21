@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/kryptonn36/multiWorks/internal/auth"
 	"github.com/kryptonn36/multiWorks/internal/config"
 	"github.com/kryptonn36/multiWorks/internal/db"
 )
@@ -32,11 +34,21 @@ func main() {
 	}
 	defer database.Close()
 
+	queries := db.New(database)
+	authHandler := auth.NewHandler(
+		queries,
+		cfg.JWTSecret,
+		15*time.Minute,
+	)
+
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
 
 	router.GET("/health", func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(
+			c.Request.Context(),
+			2*time.Second,
+		)
 		defer cancel()
 
 		if err := database.PingContext(ctx); err != nil {
@@ -48,11 +60,19 @@ func main() {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"status": "ok",
-			"service": "cornflask-storyboard-api",
+			"status":   "ok",
+			"service":  "cornflask-storyboard-api",
 			"database": "connected",
 		})
 	})
+
+	publicAuth := router.Group("/api/auth")
+	publicAuth.POST("/register", authHandler.Register)
+	publicAuth.POST("/login", authHandler.Login)
+
+	protectedAuth := router.Group("/api/auth")
+	protectedAuth.Use(auth.AuthMiddleware(cfg.JWTSecret))
+	protectedAuth.GET("/me", authHandler.Me)
 
 	server := &http.Server{
 		Addr:              cfg.Port,
@@ -75,9 +95,10 @@ func main() {
 
 	select {
 	case err := <-serverErrors:
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("HTTP server: %v", err)
 		}
+
 	case <-signalCtx.Done():
 		log.Println("Shutdown signal received")
 

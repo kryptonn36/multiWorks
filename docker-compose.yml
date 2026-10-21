@@ -27,8 +27,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      APP_ADDR: ":8080"
+      PORT: ":8080"
       DATABASE_URL: postgres://${POSTGRES_USER:-storyboard}:${POSTGRES_PASSWORD:-local_dev_password}@db:5432/${POSTGRES_DB:-storyboard}?sslmode=disable
+      JWT_SECRET: 8cbe00fdd374ee458f2a863a4b7620a1039fa2eb64163726992d5ddfb8d477a2
     ports:
       - "8080:8080"
     depends_on:
