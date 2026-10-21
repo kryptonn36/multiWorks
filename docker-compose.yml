@@ -26,6 +26,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # Reset the startup-check marker whenever the container starts or restarts.
+    command: ["/bin/sh", "-c", "rm -f /tmp/api-startup-ready; exec ./server"]
     environment:
       PORT: ":8080"
       DATABASE_URL: postgres://${POSTGRES_USER:-storyboard}:${POSTGRES_PASSWORD:-local_dev_password}@db:5432/${POSTGRES_DB:-storyboard}?sslmode=disable
@@ -34,6 +36,28 @@ services:
       - "8080:8080"
     depends_on:
       db:
+        condition: service_healthy
+    healthcheck:
+      # Once startup succeeds, subsequent checks use the marker without HTTP calls.
+      test: ["CMD-SHELL", "test -f /tmp/api-startup-ready || { wget -q -O /dev/null http://127.0.0.1:8080/health && touch /tmp/api-startup-ready; }"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      API_TARGET: http://api:8080
+      FRONTEND_HOST: 0.0.0.0
+      FRONTEND_PORT: "5173"
+    ports:
+      - "5173:5173"
+    depends_on:
+      api:
         condition: service_healthy
     restart: unless-stopped
 
