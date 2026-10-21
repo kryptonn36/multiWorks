@@ -10,9 +10,40 @@ import (
 	"github.com/google/uuid"
 )
 
+type Project struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Name        string
+	CreatedBy   uuid.UUID
+	LastSeq     int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ProjectMember struct {
+	ProjectID uuid.UUID
+	UserID    uuid.UUID
+	Role      string
+	CreatedAt time.Time
+}
+
 type User struct {
 	ID           uuid.UUID
 	Email        string
 	PasswordHash string
 	CreatedAt    time.Time
+}
+
+type Workspace struct {
+	ID        uuid.UUID
+	Name      string
+	CreatedBy uuid.UUID
+	CreatedAt time.Time
+}
+
+type WorkspaceMember struct {
+	WorkspaceID uuid.UUID
+	UserID      uuid.UUID
+	Role        string
+	CreatedAt   time.Time
 }

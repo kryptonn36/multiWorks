@@ -1,5 +1,5 @@
 # DB_URL ?= $(DB_URL)
-include .env
+include ../.env
 export
 
 migrate-up:

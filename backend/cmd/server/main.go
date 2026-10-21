@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -14,6 +15,8 @@ import (
 	"github.com/kryptonn36/multiWorks/internal/auth"
 	"github.com/kryptonn36/multiWorks/internal/config"
 	"github.com/kryptonn36/multiWorks/internal/db"
+	"github.com/kryptonn36/multiWorks/internal/project"
+	"github.com/kryptonn36/multiWorks/internal/workspace"
 )
 
 func main() {
@@ -40,6 +43,8 @@ func main() {
 		cfg.JWTSecret,
 		15*time.Minute,
 	)
+	workspaceHandler := workspace.NewHandler(database)
+	projectHandler := project.NewHandler(database)
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
@@ -66,13 +71,45 @@ func main() {
 		})
 	})
 
+	// Public authentication endpoints.
 	publicAuth := router.Group("/api/auth")
 	publicAuth.POST("/register", authHandler.Register)
 	publicAuth.POST("/login", authHandler.Login)
 
+	// Authenticated user profile.
 	protectedAuth := router.Group("/api/auth")
 	protectedAuth.Use(auth.AuthMiddleware(cfg.JWTSecret))
 	protectedAuth.GET("/me", authHandler.Me)
+
+	// All workspace and project routes require a valid JWT.
+	api := router.Group("/api")
+	api.Use(auth.AuthMiddleware(cfg.JWTSecret))
+
+	api.POST("/workspaces", workspaceHandler.Create)
+	api.GET("/workspaces", workspaceHandler.List)
+	api.GET("/workspaces/:workspaceID", workspaceHandler.Get)
+
+	api.GET(
+		"/workspaces/:workspaceID/members",
+		workspaceHandler.ListMembers,
+	)
+	api.POST(
+		"/workspaces/:workspaceID/members",
+		workspaceHandler.AddMember,
+	)
+
+	api.POST(
+		"/workspaces/:workspaceID/projects",
+		projectHandler.Create,
+	)
+	api.GET(
+		"/workspaces/:workspaceID/projects",
+		projectHandler.List,
+	)
+
+	api.GET("/projects/:projectID", projectHandler.Get)
+	api.GET("/projects/:projectID/members", projectHandler.ListMembers)
+	api.POST("/projects/:projectID/members", projectHandler.AddMember)
 
 	server := &http.Server{
 		Addr:              cfg.Port,
