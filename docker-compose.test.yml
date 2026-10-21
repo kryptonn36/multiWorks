@@ -1,0 +1,59 @@
+# An independent test stack. Production services and volumes are never targeted.
+name: multiworks-stage9
+services:
+  test-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: multiworks_test
+      POSTGRES_PASSWORD: multiworks_test_password
+      POSTGRES_DB: multiworks_test
+    ports:
+      - "127.0.0.1:${TEST_DB_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multiworks_test -d multiworks_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  test-api:
+    profiles: [browser]
+    build: ./backend
+    environment:
+      PORT: ":8080"
+      DATABASE_URL: postgres://multiworks_test:multiworks_test_password@test-db:5432/multiworks_test?sslmode=disable
+      JWT_SECRET: stage9-test-only-secret-at-least-32-characters
+      ASSET_STORAGE_ROOT: /data/assets
+      ASSET_MAX_UPLOAD_BYTES: "10485760"
+      ASSET_MAX_PIXELS: "25000000"
+      AGENT_MAX_OPS: "20"
+      AGENT_TIMEOUT_SECONDS: "3"
+    volumes:
+      - stage9_assets:/data/assets
+    ports:
+      - "127.0.0.1:${TEST_API_PORT:-18080}:8080"
+    depends_on:
+      test-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/stage9-started || { wget -q -O /dev/null http://127.0.0.1:8080/health && touch /tmp/stage9-started; }"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  test-frontend:
+    profiles: [browser]
+    build: ./frontend
+    environment:
+      API_TARGET: http://test-api:8080
+      FRONTEND_HOST: 0.0.0.0
+      FRONTEND_PORT: "5173"
+    ports:
+      - "127.0.0.1:${TEST_FRONTEND_PORT:-15173}:5173"
+    depends_on:
+      test-api:
+        condition: service_healthy
+
+volumes:
+  stage9_assets:
