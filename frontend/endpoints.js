@@ -21,6 +21,16 @@ export const endpoints = [
   { id: 'board', group: 'Storyboard', method: 'GET', path: '/api/projects/:projectID/board' },
   { id: 'submit-op', group: 'Storyboard', method: 'POST', path: '/api/projects/:projectID/ops' },
   { id: 'replay-ops', group: 'Storyboard', method: 'GET', path: '/api/projects/:projectID/ops' },
+  { id: 'upload-asset', method: 'POST', path: '/api/projects/:projectID/shots/:shotID/assets' },
+  { id: 'assets', method: 'GET', path: '/api/projects/:projectID/assets' },
+  { id: 'asset-download', method: 'GET', path: '/api/projects/:projectID/assets/:assetID' },
+  { id: 'asset-thumbnail', method: 'GET', path: '/api/projects/:projectID/assets/:assetID/thumbnail' },
+  { id: 'create-proposal', method: 'POST', path: '/api/projects/:projectID/agent/propose' },
+  { id: 'create-proposal-legacy', method: 'POST', path: '/api/projects/:projectID/agent/proposals' },
+  { id: 'proposals', method: 'GET', path: '/api/projects/:projectID/agent/proposals' },
+  { id: 'proposal', method: 'GET', path: '/api/projects/:projectID/agent/proposals/:proposalID' },
+  { id: 'approve-proposal', method: 'POST', path: '/api/projects/:projectID/agent/proposals/:proposalID/approve' },
+  { id: 'reject-proposal', method: 'POST', path: '/api/projects/:projectID/agent/proposals/:proposalID/reject' },
 ];
 
 export function requestPath(endpoint, context) {

@@ -11,6 +11,7 @@ const assets = {
   '/api.js': ['api.js', 'text/javascript; charset=utf-8'],
   '/projectSocket.js': ['projectSocket.js', 'text/javascript; charset=utf-8'],
   '/board-sync.js': ['board-sync.js', 'text/javascript; charset=utf-8'],
+  '/stage8.js': ['stage8.js', 'text/javascript; charset=utf-8'],
   '/storyboard.js': ['storyboard.js', 'text/javascript; charset=utf-8'],
   '/endpoints.js': ['endpoints.js', 'text/javascript; charset=utf-8'],
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
@@ -39,6 +40,7 @@ export function createServer(target = process.env.API_TARGET || 'http://localhos
         res.writeHead(response.status, {
           'content-type': response.headers.get('content-type') || 'text/plain',
           'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
         });
         res.end(Buffer.from(await response.arrayBuffer()));
       } catch {

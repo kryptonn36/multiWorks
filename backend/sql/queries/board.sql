@@ -5,7 +5,7 @@ SELECT jsonb_build_object(
     'scenes', COALESCE((
         SELECT jsonb_agg(
             to_jsonb(sc) || jsonb_build_object('shots', COALESCE((
-                SELECT jsonb_agg(to_jsonb(sh) ORDER BY sh.position, sh.created_at, sh.id)
+                SELECT jsonb_agg(to_jsonb(sh) || jsonb_build_object('asset_ids',COALESCE((SELECT jsonb_agg(sa.asset_id ORDER BY sa.created_at,sa.asset_id) FROM shot_assets sa WHERE sa.shot_id=sh.id),'[]'::jsonb)) ORDER BY sh.position, sh.created_at, sh.id)
                 FROM shots sh
                 WHERE sh.scene_id = sc.id
             ), '[]'::jsonb))

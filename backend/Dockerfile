@@ -24,6 +24,9 @@ WORKDIR /app
 COPY --from=builder /out/server ./server
 COPY --from=builder /app/sql/migrations ./migrations
 
+RUN mkdir -p /data/assets && chown app:app /data/assets
+ENV ASSET_STORAGE_ROOT=/data/assets
+
 USER app
 
 EXPOSE 8080

@@ -31,16 +31,17 @@ type Scene struct {
 	Shots       []Shot    `json:"shots"`
 }
 type Shot struct {
-	ID        uuid.UUID `json:"id"`
-	SceneID   uuid.UUID `json:"scene_id"`
-	Prompt    string    `json:"prompt"`
-	Style     string    `json:"style"`
-	Notes     string    `json:"notes"`
-	ImageURL  *string   `json:"image_url"`
-	Position  int       `json:"position"`
-	CreatedBy uuid.UUID `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	AssetIDs  []uuid.UUID `json:"asset_ids"`
+	ID        uuid.UUID   `json:"id"`
+	SceneID   uuid.UUID   `json:"scene_id"`
+	Prompt    string      `json:"prompt"`
+	Style     string      `json:"style"`
+	Notes     string      `json:"notes"`
+	ImageURL  *string     `json:"image_url"`
+	Position  int         `json:"position"`
+	CreatedBy uuid.UUID   `json:"created_by"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 type Operation struct {
 	ProjectID uuid.UUID       `json:"project_id"`
@@ -65,6 +66,9 @@ func Clone(state State) State {
 	next.Scenes = append([]Scene{}, state.Scenes...)
 	for i := range next.Scenes {
 		next.Scenes[i].Shots = append([]Shot{}, state.Scenes[i].Shots...)
+		for j := range next.Scenes[i].Shots {
+			next.Scenes[i].Shots[j].AssetIDs = append([]uuid.UUID{}, state.Scenes[i].Shots[j].AssetIDs...)
+		}
 	}
 	return next
 }
@@ -76,6 +80,7 @@ func Canonical(state State) State {
 		scene.UpdatedAt = scene.UpdatedAt.UTC()
 		for j := range scene.Shots {
 			shot := &scene.Shots[j]
+			sort.Slice(shot.AssetIDs, func(a, b int) bool { return shot.AssetIDs[a].String() < shot.AssetIDs[b].String() })
 			shot.CreatedAt = shot.CreatedAt.UTC()
 			shot.UpdatedAt = shot.UpdatedAt.UTC()
 		}
@@ -99,6 +104,13 @@ func Validate(state State, projectID uuid.UUID) error {
 				return errors.New("invalid restored shot")
 			}
 			shotsSeen[shot.ID] = true
+			assets := map[uuid.UUID]bool{}
+			for _, id := range shot.AssetIDs {
+				if id == uuid.Nil || assets[id] {
+					return errors.New("invalid asset reference")
+				}
+				assets[id] = true
+			}
 		}
 	}
 	return nil
@@ -117,6 +129,15 @@ func Replace(ctx context.Context, tx *sql.Tx, state State) error {
 		for _, sh := range sc.Shots {
 			if _, err := db.New(tx).RestoreShot(ctx, db.RestoreShotParams{ID: sh.ID, SceneID: sc.ID, Prompt: sh.Prompt, Style: sh.Style, Notes: sh.Notes, ImageUrl: db.NullableString(sh.ImageURL), Position: int64(sh.Position), CreatedBy: sh.CreatedBy, CreatedAt: sh.CreatedAt, UpdatedAt: sh.UpdatedAt}); err != nil {
 				return err
+			}
+			for _, assetID := range sh.AssetIDs {
+				queries := db.New(tx)
+				if _, err := queries.GetProjectAsset(ctx, db.GetProjectAssetParams{ProjectID: state.ProjectID, AssetID: assetID}); err != nil {
+					return err
+				}
+				if err := queries.AttachShotAsset(ctx, db.AttachShotAssetParams{ProjectID: state.ProjectID, ShotID: sh.ID, AssetID: assetID, AttachedBy: uuid.NullUUID{UUID: sh.CreatedBy, Valid: true}}); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -158,6 +179,7 @@ func Apply(state State, op Operation) (State, error) {
 	op.CreatedAt = op.CreatedAt.UTC()
 	var p struct {
 		SceneID     uuid.UUID   `json:"scene_id"`
+		AssetID     uuid.UUID   `json:"asset_id"`
 		ShotID      uuid.UUID   `json:"shot_id"`
 		Title       *string     `json:"title"`
 		Description *string     `json:"description"`
@@ -251,7 +273,7 @@ func Apply(state State, op Operation) (State, error) {
 					position = sh.Position + 1
 				}
 			}
-			sc.Shots = append(sc.Shots, Shot{ID: p.ShotID, SceneID: sc.ID, Prompt: value(p.Prompt), Style: value(p.Style), Notes: value(p.Notes), ImageURL: p.ImageURL, Position: position, CreatedBy: op.ActorID, CreatedAt: op.CreatedAt, UpdatedAt: op.CreatedAt})
+			sc.Shots = append(sc.Shots, Shot{AssetIDs: []uuid.UUID{}, ID: p.ShotID, SceneID: sc.ID, Prompt: value(p.Prompt), Style: value(p.Style), Notes: value(p.Notes), ImageURL: p.ImageURL, Position: position, CreatedBy: op.ActorID, CreatedAt: op.CreatedAt, UpdatedAt: op.CreatedAt})
 		case "shot.reorder":
 			if len(p.ShotIDs) != len(sc.Shots) {
 				return state, errors.New("incomplete shot order in history")
@@ -271,6 +293,25 @@ func Apply(state State, op Operation) (State, error) {
 				if !found {
 					return state, errors.New("invalid shot order in history")
 				}
+			}
+		case "asset.attach":
+			found := false
+			for i := range sc.Shots {
+				if sc.Shots[i].ID == p.ShotID {
+					found = true
+					exists := false
+					for _, id := range sc.Shots[i].AssetIDs {
+						if id == p.AssetID {
+							exists = true
+						}
+					}
+					if !exists {
+						sc.Shots[i].AssetIDs = append(sc.Shots[i].AssetIDs, p.AssetID)
+					}
+				}
+			}
+			if !found || p.AssetID == uuid.Nil {
+				return state, errors.New("invalid asset attachment in history")
 			}
 		case "shot.update", "shot.delete":
 			index := -1
@@ -329,5 +370,5 @@ func Apply(state State, op Operation) (State, error) {
 			return a.ID.String() < b.ID.String()
 		})
 	}
-	return next, nil
+	return Canonical(next), nil
 }

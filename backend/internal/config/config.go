@@ -7,16 +7,18 @@ import (
 )
 
 type Config struct {
-	Port        string
-	DatabaseURL string
-	JWTSecret   string
+	AssetStorageRoot string
+	Port             string
+	DatabaseURL      string
+	JWTSecret        string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:        getEnv("PORT", ":8080"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		JWTSecret:   os.Getenv("JWT_SECRET"),
+		AssetStorageRoot: getEnv("ASSET_STORAGE_ROOT", "./data/assets"),
+		Port:             getEnv("PORT", ":8080"),
+		DatabaseURL:      os.Getenv("DATABASE_URL"),
+		JWTSecret:        os.Getenv("JWT_SECRET"),
 	}
 
 	if cfg.DatabaseURL == "" {

@@ -32,7 +32,8 @@ SELECT s.id, s.project_id, s.title, s.description, s.position,
 -- name: ListBoardShots :many
 SELECT s.id, s.scene_id, s.prompt, s.style, s.notes,
 			s.image_url, s.position, s.created_by,
-			s.created_at::text, s.updated_at::text
+			s.created_at::text, s.updated_at::text,
+ COALESCE((SELECT jsonb_agg(sa.asset_id ORDER BY sa.created_at,sa.asset_id) FROM shot_assets sa WHERE sa.shot_id=s.id),'[]'::jsonb)::jsonb AS asset_ids
 		FROM shots s
 		JOIN scenes sc ON sc.id = s.scene_id
 		WHERE sc.project_id = sqlc.arg(project_id)

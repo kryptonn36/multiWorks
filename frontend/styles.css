@@ -233,3 +233,12 @@ textarea:focus { border-color: #6aa684; box-shadow: 0 0 0 3px #2075530c; }
 .history-preview { border-top:1px solid var(--line); padding-top:20px; }
 .history-image { max-width:240px; max-height:160px; object-fit:contain; }
 @media (max-width:640px) { .history-columns { grid-template-columns:1fr; } }
+
+.shot-assets { border-top: 1px solid var(--border, #e7e5e4); padding-top: 12px; margin: 12px 0; }
+.shot-assets h5 { margin: 0 0 10px; }
+.asset-card { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.asset-thumbnail { width: 100%; max-height: 220px; object-fit: contain; background: #f6f4f1; border-radius: 10px; }
+.agent-panel { margin-top: 24px; }
+.proposal-card { border-top: 1px solid var(--border, #e7e5e4); padding: 18px 0; overflow-wrap: anywhere; }
+.proposal-card ol { padding-left: 24px; }
+.proposal-card li p { white-space: pre-wrap; }

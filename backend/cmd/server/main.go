@@ -13,6 +13,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/kryptonn36/multiWorks/internal/agent"
+	"github.com/kryptonn36/multiWorks/internal/assets"
 	"github.com/kryptonn36/multiWorks/internal/auth"
 	"github.com/kryptonn36/multiWorks/internal/config"
 	"github.com/kryptonn36/multiWorks/internal/db"
@@ -74,6 +76,27 @@ func main() {
 			Operation: raw,
 		})
 	})
+
+	storage, err := assets.NewStorage(cfg.AssetStorageRoot)
+	if err != nil {
+		log.Fatalf("initialize asset storage: %v", err)
+	}
+	assetService := assets.NewService(database, storage, operationService)
+	assetHandler := assets.NewHandler(assetService)
+	agentService := agent.NewService(database, operationService)
+	agentHandler := agent.NewHandler(agentService)
+	assetService.Publish = func(projectID uuid.UUID, asset assets.Asset) {
+		raw, err := json.Marshal(asset)
+		if err == nil {
+			hub.Broadcast(projectID, websocket.ServerMessage{Type: "asset_status", Asset: raw})
+		}
+	}
+	agentService.Publish = func(projectID uuid.UUID, proposal agent.Proposal) {
+		raw, err := json.Marshal(proposal)
+		if err == nil {
+			hub.Broadcast(projectID, websocket.ServerMessage{Type: "agent_proposal", Proposal: raw})
+		}
+	}
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
@@ -153,6 +176,18 @@ func main() {
 	api.GET("/projects/:projectID/history/:seq", historyHandler.GetAtSequence)
 	api.POST("/projects/:projectID/history/:seq/restore", historyHandler.Restore)
 
+	api.POST("/projects/:projectID/shots/:shotID/assets", assetHandler.Upload)
+	api.GET("/projects/:projectID/assets", assetHandler.List)
+	api.GET("/projects/:projectID/assets/:assetID", assetHandler.Download)
+	api.GET("/projects/:projectID/assets/:assetID/thumbnail", assetHandler.Thumbnail)
+	api.POST("/projects/:projectID/agent/propose", agentHandler.Generate)
+	// Compatibility alias for the initial Stage 8 client; also asynchronous.
+	api.POST("/projects/:projectID/agent/proposals", agentHandler.Generate)
+	api.GET("/projects/:projectID/agent/proposals", agentHandler.List)
+	api.GET("/projects/:projectID/agent/proposals/:proposalID", agentHandler.Get)
+	api.POST("/projects/:projectID/agent/proposals/:proposalID/approve", agentHandler.Approve)
+	api.POST("/projects/:projectID/agent/proposals/:proposalID/reject", agentHandler.Reject)
+
 	server := &http.Server{
 		Addr:              cfg.Port,
 		Handler:           router,
@@ -171,6 +206,8 @@ func main() {
 		syscall.SIGTERM,
 	)
 	defer stop()
+	go assetService.Run(signalCtx)
+	go agentService.Run(signalCtx)
 
 	select {
 	case err := <-serverErrors:

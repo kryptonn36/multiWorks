@@ -12,10 +12,11 @@ export function createClient({ fetcher = globalThis.fetch, storage, onUnauthoriz
     token = value;
     try { value ? storage?.setItem('multiworks.token', value) : storage?.removeItem('multiworks.token'); } catch { /* Storage is optional. */ }
   }
-  async function request(id, { context = {}, body, query } = {}) {
+  async function request(id, { context = {}, body, query, form, responseType } = {}) {
     const endpoint = endpoints.find((item) => item.id === id);
     if (!endpoint) throw new Error('Unknown operation');
-    const headers = { Accept: 'application/json', 'Content-Type': 'application/json' };
+    const headers = { Accept: responseType === 'blob' ? 'image/*' : 'application/json' };
+    if (!form) headers['Content-Type'] = 'application/json';
     const requestToken = token;
     if (!endpoint.public && requestToken) headers.Authorization = `Bearer ${requestToken}`;
     let response;
@@ -23,7 +24,7 @@ export function createClient({ fetcher = globalThis.fetch, storage, onUnauthoriz
       const search = query ? `?${new URLSearchParams(query)}` : '';
       response = await fetcher(`/backend${requestPath(endpoint, context)}${search}`, {
         method: endpoint.method, headers,
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        ...(form ? { body: form } : body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(35000),
       });
     } catch (error) {
@@ -36,6 +37,7 @@ export function createClient({ fetcher = globalThis.fetch, storage, onUnauthoriz
       }
       throw new ApiError('Your session has expired. Please sign in again.', 401);
     }
+    if (response.ok && responseType === 'blob') return response.blob();
     let data;
     try { data = await response.json(); } catch { throw new ApiError('The server returned an unexpected response. Please try again.', response.status); }
     if (!response.ok) {

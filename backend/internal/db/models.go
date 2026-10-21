@@ -12,6 +12,59 @@ import (
 	"github.com/google/uuid"
 )
 
+type AgentJob struct {
+	ProposalID   uuid.UUID
+	BoardContext json.RawMessage
+	Status       string
+	Attempts     int32
+	LockedAt     sql.NullTime
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type AgentProposal struct {
+	ID             uuid.UUID
+	ProjectID      uuid.UUID
+	RequestedBy    uuid.NullUUID
+	Instruction    string
+	GenerationMode string
+	BaseSeq        int64
+	Status         string
+	ProposedOps    json.RawMessage
+	AppliedOps     json.RawMessage
+	FailureReason  sql.NullString
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type Asset struct {
+	ID           uuid.UUID
+	ProjectID    uuid.UUID
+	Sha256       string
+	MimeType     string
+	SizeBytes    int64
+	StorageKey   string
+	ThumbnailKey sql.NullString
+	Status       string
+	ErrorMessage sql.NullString
+	CreatedBy    uuid.NullUUID
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type AssetJob struct {
+	ID          int64
+	AssetID     uuid.UUID
+	JobType     string
+	Status      string
+	Attempts    int32
+	AvailableAt time.Time
+	LockedAt    sql.NullTime
+	LastError   sql.NullString
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type Project struct {
 	ID          uuid.UUID
 	WorkspaceID uuid.UUID
@@ -72,6 +125,14 @@ type Shot struct {
 	CreatedBy uuid.UUID
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type ShotAsset struct {
+	ProjectID  uuid.UUID
+	ShotID     uuid.UUID
+	AssetID    uuid.UUID
+	AttachedBy uuid.NullUUID
+	CreatedAt  time.Time
 }
 
 type User struct {

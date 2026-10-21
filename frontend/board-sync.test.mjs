@@ -183,3 +183,14 @@ test('restore uses the prepared base sequence and retries its original endpoint 
   assert.equal(requests[0].id,'restore-history');assert.deepEqual(requests[1],requests[0]);
   assert.equal(requests[0].context.seq,0);assert.equal(requests[0].body.base_seq,7);assert.equal(sync.lastSeq,8);
 });
+
+test('asset attachments deduplicate, replay contiguously, and preserve shot fields', () => {
+  const original = { project_id: 'project-1', last_seq: 2, scenes: [{ id: 'scene-1', shots: [{ id: 'shot-1', prompt: 'Original', asset_ids: [] }] }] };
+  const operation = { project_id: 'project-1', seq: 3, type: 'asset.attach', payload: { scene_id: 'scene-1', shot_id: 'shot-1', asset_id: 'asset-1' } };
+  const next = applyBoardOperation(original, operation);
+  assert.deepEqual(next.scenes[0].shots[0].asset_ids, ['asset-1']);
+  assert.deepEqual(applyBoardOperation(next, operation).scenes[0].shots[0].asset_ids, ['asset-1']);
+  assert.equal(next.scenes[0].shots[0].prompt, 'Original');
+  assert.deepEqual(original.scenes[0].shots[0].asset_ids, []);
+  assert.throws(() => applyBoardOperation(original, { ...operation, payload: { ...operation.payload, shot_id: 'missing' } }), /missing/);
+});

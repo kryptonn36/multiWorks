@@ -26,9 +26,12 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    volumes:
+      - assets_data:/data/assets
     # Reset the startup-check marker whenever the container starts or restarts.
     command: ["/bin/sh", "-c", "rm -f /tmp/api-startup-ready; exec ./server"]
     environment:
+      ASSET_STORAGE_ROOT: /data/assets
       PORT: ":8080"
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-}
       DATABASE_URL: postgres://${POSTGRES_USER:-storyboard}:${POSTGRES_PASSWORD:-local_dev_password}@db:5432/${POSTGRES_DB:-storyboard}?sslmode=disable
@@ -64,3 +67,4 @@ services:
 
 volumes:
   postgres_data:
+  assets_data:

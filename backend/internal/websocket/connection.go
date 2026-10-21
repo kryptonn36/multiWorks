@@ -15,6 +15,8 @@ type ClientMessage struct {
 }
 
 type ServerMessage struct {
+	Asset             json.RawMessage `json:"asset,omitempty"`
+	Proposal          json.RawMessage `json:"proposal,omitempty"`
 	ReconnectRequired bool            `json:"reconnect_required,omitempty"`
 	BoundarySeq       *int64          `json:"boundary_seq,omitempty"`
 	Role              string          `json:"role,omitempty"`

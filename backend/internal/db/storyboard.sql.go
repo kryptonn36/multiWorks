@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 
 	"github.com/google/uuid"
 )
@@ -340,7 +341,8 @@ func (q *Queries) ListBoardScenes(ctx context.Context, arg ListBoardScenesParams
 const listBoardShots = `-- name: ListBoardShots :many
 SELECT s.id, s.scene_id, s.prompt, s.style, s.notes,
 			s.image_url, s.position, s.created_by,
-			s.created_at::text, s.updated_at::text
+			s.created_at::text, s.updated_at::text,
+ COALESCE((SELECT jsonb_agg(sa.asset_id ORDER BY sa.created_at,sa.asset_id) FROM shot_assets sa WHERE sa.shot_id=s.id),'[]'::jsonb)::jsonb AS asset_ids
 		FROM shots s
 		JOIN scenes sc ON sc.id = s.scene_id
 		WHERE sc.project_id = $1
@@ -374,6 +376,7 @@ type ListBoardShotsRow struct {
 	CreatedBy  uuid.UUID
 	SCreatedAt string
 	SUpdatedAt string
+	AssetIds   json.RawMessage
 }
 
 func (q *Queries) ListBoardShots(ctx context.Context, arg ListBoardShotsParams) ([]ListBoardShotsRow, error) {
@@ -396,6 +399,7 @@ func (q *Queries) ListBoardShots(ctx context.Context, arg ListBoardShotsParams) 
 			&i.CreatedBy,
 			&i.SCreatedAt,
 			&i.SUpdatedAt,
+			&i.AssetIds,
 		); err != nil {
 			return nil, err
 		}

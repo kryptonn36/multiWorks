@@ -72,16 +72,76 @@ func (s *Service) Submit(ctx context.Context, projectID, userID uuid.UUID, req S
 		return SubmitResponse{}, opError(http.StatusBadRequest, err.Error())
 	}
 
-	p, err := decodePayload(req.Payload)
+	_, err := decodePayload(req.Payload)
 	if err != nil {
 		return SubmitResponse{}, opError(http.StatusBadRequest, "invalid operation payload")
 	}
 
+	var result SubmitResponse
+	_, err = s.Transact(ctx, projectID, userID, func(tx *sql.Tx, apply func(SubmitRequest) (SubmitResponse, error)) error {
+		var err error
+		result, err = apply(req)
+		return err
+	})
+	return result, err
+}
+
+// Transact keeps preparation, a bounded batch, and its decision metadata atomic.
+// Only committed, non-duplicate operations are published.
+func (s *Service) Transact(ctx context.Context, projectID, userID uuid.UUID, run func(*sql.Tx, func(SubmitRequest) (SubmitResponse, error)) error) ([]SubmitResponse, error) {
+	if userID == uuid.Nil {
+		return nil, opError(401, "authentication required")
+	}
 	tx, err := s.database.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return SubmitResponse{}, opError(http.StatusInternalServerError, "could not start operation")
+		return nil, opError(500, "could not start operation")
 	}
 	defer tx.Rollback()
+	if _, err := db.New(tx).LockProjectForOperation(ctx, db.LockProjectForOperationParams{ProjectID: projectID, UserID: userID}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, opError(404, "project not found")
+		}
+		return nil, err
+	}
+	role, err := projectRoleTx(ctx, tx, projectID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if role != "owner" && role != "editor" {
+		return nil, opError(403, "editor or owner role required")
+	}
+	results := []SubmitResponse{}
+	apply := func(req SubmitRequest) (SubmitResponse, error) {
+		result, err := s.submitTx(ctx, tx, projectID, userID, req)
+		if err == nil {
+			results = append(results, result)
+		}
+		return result, err
+	}
+	if err := run(tx, apply); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, opError(500, "could not commit operation")
+	}
+	for _, result := range results {
+		if !result.Duplicate && s.publisher != nil {
+			s.publisher(projectID, result.Operation)
+		}
+	}
+	return results, nil
+}
+
+func NewError(status int, message string) error { return opError(status, message) }
+
+func (s *Service) submitTx(ctx context.Context, tx *sql.Tx, projectID, userID uuid.UUID, req SubmitRequest) (SubmitResponse, error) {
+	if err := validateRequest(req); err != nil {
+		return SubmitResponse{}, opError(400, err.Error())
+	}
+	p, err := decodePayload(req.Payload)
+	if err != nil {
+		return SubmitResponse{}, opError(400, "invalid operation payload")
+	}
 	queries := db.New(s.database).WithTx(tx)
 
 	// Lock this project row. All writers for this project serialize here.
@@ -121,9 +181,6 @@ func (s *Service) Submit(ctx context.Context, projectID, userID uuid.UUID, req S
 		}
 
 		existing.Payload = existingPayload
-		if err := tx.Commit(); err != nil {
-			return SubmitResponse{}, opError(http.StatusInternalServerError, "could not finish duplicate request")
-		}
 
 		return SubmitResponse{
 			Operation:  existing,
@@ -210,14 +267,6 @@ func (s *Service) Submit(ctx context.Context, projectID, userID uuid.UUID, req S
 		if err := board.SaveSnapshot(ctx, tx, projectID, userID, nextSeq); err != nil {
 			return SubmitResponse{}, opError(500, "could not save project snapshot")
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return SubmitResponse{}, opError(http.StatusInternalServerError, "could not commit operation")
-	}
-
-	if s.publisher != nil {
-		s.publisher(projectID, op)
 	}
 
 	return SubmitResponse{

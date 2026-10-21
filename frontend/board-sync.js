@@ -51,8 +51,14 @@ export function applyBoardOperation(board, operation) {
     case 'shot.create': {
       const parent = scene();
       if (!p.shot_id || parent.shots.some((s) => s.id === p.shot_id)) throw new Error('Cannot apply shot creation.');
-      parent.shots.push({ id: p.shot_id, scene_id: p.scene_id, prompt: p.prompt ?? '', style: p.style ?? '', notes: p.notes ?? '', image_url: p.image_url ?? null, position: Math.max(-1, ...parent.shots.map((s) => s.position)) + 1, ...metadata });
+      parent.shots.push({ asset_ids: [], id: p.shot_id, scene_id: p.scene_id, prompt: p.prompt ?? '', style: p.style ?? '', notes: p.notes ?? '', image_url: p.image_url ?? null, position: Math.max(-1, ...parent.shots.map((s) => s.position)) + 1, ...metadata });
       ordered(parent.shots); break;
+    }
+    case 'asset.attach': {
+      const target = shot(scene());
+      if (typeof p.asset_id !== 'string' || !p.asset_id) throw new Error('Invalid asset attachment in replay.');
+      target.asset_ids = [...new Set([...(target.asset_ids || []), p.asset_id])];
+      break;
     }
     case 'shot.update': update(shot(scene()), ['prompt', 'style', 'notes', 'image_url']); break;
     case 'shot.delete': { const parent = scene(); shot(parent); parent.shots = parent.shots.filter((s) => s.id !== p.shot_id); break; }

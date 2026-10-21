@@ -2,6 +2,7 @@ package storyboard
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"github.com/kryptonn36/multiWorks/internal/db"
 	"net/http"
@@ -32,16 +33,17 @@ type Scene struct {
 }
 
 type Shot struct {
-	ID        uuid.UUID `json:"id"`
-	SceneID   uuid.UUID `json:"scene_id"`
-	Prompt    string    `json:"prompt"`
-	Style     string    `json:"style"`
-	Notes     string    `json:"notes"`
-	ImageURL  *string   `json:"image_url"`
-	Position  int       `json:"position"`
-	CreatedBy uuid.UUID `json:"created_by"`
-	CreatedAt string    `json:"created_at"`
-	UpdatedAt string    `json:"updated_at"`
+	AssetIDs  []uuid.UUID `json:"asset_ids"`
+	ID        uuid.UUID   `json:"id"`
+	SceneID   uuid.UUID   `json:"scene_id"`
+	Prompt    string      `json:"prompt"`
+	Style     string      `json:"style"`
+	Notes     string      `json:"notes"`
+	ImageURL  *string     `json:"image_url"`
+	Position  int         `json:"position"`
+	CreatedBy uuid.UUID   `json:"created_by"`
+	CreatedAt string      `json:"created_at"`
+	UpdatedAt string      `json:"updated_at"`
 }
 
 type createSceneRequest struct {
@@ -183,8 +185,13 @@ func (h *Handler) GetBoard(c *gin.Context) {
 		return
 	}
 	for _, row := range shotRows {
+		var assetIDs []uuid.UUID
+		if err := json.Unmarshal(row.AssetIds, &assetIDs); err != nil {
+			respondError(c, 500, "could not read shot assets")
+			return
+		}
 		if index, ok := indexes[row.SceneID]; ok {
-			scenes[index].Shots = append(scenes[index].Shots, Shot{ID: row.ID, SceneID: row.SceneID, Prompt: row.Prompt, Style: row.Style, Notes: row.Notes, ImageURL: db.StringPointer(row.ImageUrl), Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.SCreatedAt, UpdatedAt: row.SUpdatedAt})
+			scenes[index].Shots = append(scenes[index].Shots, Shot{AssetIDs: assetIDs, ID: row.ID, SceneID: row.SceneID, Prompt: row.Prompt, Style: row.Style, Notes: row.Notes, ImageURL: db.StringPointer(row.ImageUrl), Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.SCreatedAt, UpdatedAt: row.SUpdatedAt})
 		}
 	}
 	if err := tx.Commit(); err != nil {

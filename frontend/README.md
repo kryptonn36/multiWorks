@@ -207,3 +207,7 @@ an older snapshot. Legacy data predating the operation log may lack a recoverabl
 initial state; such requests return 409 rather than inventing historical content.
 Full membership removal still has no API/UI endpoint; its shutdown hook and the
 periodic fallback are covered by database tests.
+
+Stage 8 image uploads, thumbnail processing, and local mock agent proposals are described in [STAGE8.md](STAGE8.md), including API routes and manual test steps.
+
+For asynchronous agent generation and `[mock:...]` failure tokens, see the [agent README](../backend/internal/agent/README.md).

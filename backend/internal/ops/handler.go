@@ -29,6 +29,7 @@ func NewHandlerWithService(service *Service) *Handler {
 }
 
 type payload struct {
+	AssetID     string   `json:"asset_id"`
 	SceneID     string   `json:"scene_id"`
 	ShotID      string   `json:"shot_id"`
 	Title       *string  `json:"title"`
@@ -202,6 +203,31 @@ func applyOperation(
 	p payload,
 ) error {
 	switch opType {
+	case "asset.attach":
+		sceneID, err := requireUUID(p.SceneID)
+		if err != nil {
+			return opError(400, "valid scene_id is required")
+		}
+		shotID, err := requireUUID(p.ShotID)
+		if err != nil {
+			return opError(400, "valid shot_id is required")
+		}
+		assetID, err := requireUUID(p.AssetID)
+		if err != nil {
+			return opError(400, "valid asset_id is required")
+		}
+		if err := ensureShot(ctx, tx, projectID, sceneID, shotID); err != nil {
+			return err
+		}
+		queries := db.New(tx)
+		if _, err := queries.GetProjectAsset(ctx, db.GetProjectAssetParams{ProjectID: projectID, AssetID: assetID}); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return opError(404, "asset not found")
+			}
+			return err
+		}
+		return queries.AttachShotAsset(ctx, db.AttachShotAssetParams{ProjectID: projectID, ShotID: shotID, AssetID: assetID, AttachedBy: uuid.NullUUID{UUID: userID, Valid: true}})
+
 	case "scene.create":
 		sceneID, err := requireUUID(p.SceneID)
 		if err != nil {

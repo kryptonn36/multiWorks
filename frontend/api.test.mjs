@@ -101,3 +101,24 @@ test('operation requests send envelopes and replay cursors without direct storyb
   assert.equal(calls[1].path, '/backend/api/projects/project/ops?after_seq=3&limit=100');
   assert.equal(calls[1].options.method, 'GET'); assert.equal(calls[1].options.body, undefined);
 });
+
+test('multipart uploads keep browser boundaries; protected binary downloads preserve auth and errors', async () => {
+  const session = storage(); session.setItem('multiworks.token', 'test-token');
+  const calls = [];
+  const client = createClient({ storage: session, fetcher: async (path, options) => {
+    calls.push({ path, ...options });
+    if (path.endsWith('/thumbnail')) return new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/jpeg' } });
+    return json({ asset: { id: 'asset' } }, 201);
+  } });
+  const form = new FormData(); form.append('file', new Blob(['invalid image'], { type: 'text/plain' }), 'arbitrary.txt');
+  await client.request('upload-asset', { context: { projectID: 'project', shotID: 'shot' }, form });
+  assert.equal(calls[0].body, form);
+  assert.equal(calls[0].headers['Content-Type'], undefined);
+  assert.equal(calls[0].headers.Authorization, 'Bearer test-token');
+  const blob = await client.request('asset-thumbnail', { context: { projectID: 'project', assetID: 'asset' }, responseType: 'blob' });
+  assert.deepEqual([...new Uint8Array(await blob.arrayBuffer())], [1, 2, 3]);
+  assert.equal(calls[1].headers.Authorization, 'Bearer test-token');
+  assert.equal(calls[1].path.includes('test-token'), false);
+  const denied = createClient({ fetcher: async () => json({ error: 'thumbnail is not ready' }, 409) });
+  await assert.rejects(denied.request('asset-thumbnail', { context: { projectID: 'p', assetID: 'a' }, responseType: 'blob' }), /thumbnail is not ready/);
+});

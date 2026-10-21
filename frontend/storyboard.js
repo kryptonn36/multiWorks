@@ -1,3 +1,4 @@
+import { createStage8 } from './stage8.js';
 import { connectProjectSocket } from './projectSocket.js';
 import { createBoardSync, tabClientID } from './board-sync.js';
 
@@ -26,6 +27,7 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   let revision = 0;
   let busy = false;
   const root = () => document.getElementById('storyboard');
+  const stage8 = createStage8({ getSequence: () => synchronizer?.lastSeq ?? 0, api, escape: esc, showForm, closeModal, toast, onChange: () => { if (synchronizer?.board) render(); }, sync: () => synchronizer.sync() });
   const context = (sceneID, shotID) => ({ projectID, ...(sceneID ? { sceneID } : {}), ...(shotID ? { shotID } : {}) });
   const action = (name, label, sceneID = '', shotID = '', className = 'secondary') =>
     `<button type="button" class="${className}" data-board-action="${name}" data-scene="${esc(sceneID)}" data-shot="${esc(shotID)}">${label}</button>`;
@@ -35,11 +37,12 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   }
   function shotCard(shot, index, scene) {
     const url = imageURL(shot.image_url);
-    return `<article class="shot-card" data-shot-id="${esc(shot.id)}"><div class="shot-preview">${url ? `<img class="shot-image" src="${esc(url)}" alt="Shot ${index + 1}" loading="lazy" referrerpolicy="no-referrer">` : ''}<span class="shot-placeholder" ${url ? 'hidden' : ''}>◈<small>No image</small></span></div><div class="shot-content"><div class="section-heading"><h4>Shot ${index + 1}</h4><span class="small muted">Position ${esc(shot.position)}</span></div><p class="shot-prompt">${esc(shot.prompt || 'No prompt yet.')}</p><dl class="shot-details"><div><dt>Style</dt><dd>${esc(shot.style || '—')}</dd></div><div><dt>Notes</dt><dd>${esc(shot.notes || '—')}</dd></div></dl>${shot.image_url ? `<p class="image-url" title="${esc(shot.image_url)}">Image: ${esc(shot.image_url)}</p>` : ''}<div class="board-actions">${orderButtons('shot', scene.id, shot.id)}${action('edit-shot', 'Edit', scene.id, shot.id)}${action('delete-shot', 'Delete', scene.id, shot.id, 'danger-button')}</div></div></article>`;
+    return `<article class="shot-card" data-shot-id="${esc(shot.id)}"><div class="shot-preview">${url ? `<img class="shot-image" src="${esc(url)}" alt="Shot ${index + 1}" loading="lazy" referrerpolicy="no-referrer">` : ''}<span class="shot-placeholder" ${url ? 'hidden' : ''}>◈<small>No image</small></span></div><div class="shot-content"><div class="section-heading"><h4>Shot ${index + 1}</h4><span class="small muted">Position ${esc(shot.position)}</span></div><p class="shot-prompt">${esc(shot.prompt || 'No prompt yet.')}</p><dl class="shot-details"><div><dt>Style</dt><dd>${esc(shot.style || '—')}</dd></div><div><dt>Notes</dt><dd>${esc(shot.notes || '—')}</dd></div></dl>${shot.image_url ? `<p class="image-url" title="${esc(shot.image_url)}">Image: ${esc(shot.image_url)}</p>` : ''}${stage8.shotAssets(shot)}<div class="board-actions">${orderButtons('shot', scene.id, shot.id)}${action('edit-shot', 'Edit', scene.id, shot.id)}${action('delete-shot', 'Delete', scene.id, shot.id, 'danger-button')}</div></div></article>`;
   }
   function render() {
     if (!root()) return;
     root().innerHTML = `<div id="board-presence"></div><div class="section-heading"><div><h2>Storyboard <span class="count">${scenes.length} scenes</span></h2><p>Plan your scenes, arrange your shots, and build your story.</p></div><div class="heading-actions">${synchronizer?.pending ? action('retry-write', 'Retry pending write') : ''}${action('toggle-history', historyOpen ? 'Hide history' : 'History')}${action('toggle-live', livePaused ? 'Reconnect live' : 'Pause live')}${action('reload', 'Sync changes')}${action('order-scenes', 'Edit scene order')}${action('create-scene', '+ Add scene', '', '', 'primary')}</div></div><p class="field-note"><span data-applied-seq="${synchronizer?.lastSeq ?? 0}">Applied sequence ${synchronizer?.lastSeq ?? 0}</span>. Owner/editor access is required for changes. All controls remain available so you can test backend permissions.</p>${scenes.length ? `<div class="scene-list">${scenes.map((scene, index) => `<section class="scene-card" data-scene-id="${esc(scene.id)}"><header class="scene-heading"><div><p class="eyebrow">SCENE ${index + 1} · POSITION ${esc(scene.position)}</p><h3>${esc(scene.title)}</h3><p class="scene-description">${esc(scene.description || 'No description yet.')}</p></div><div class="board-actions">${action('view-scene', viewedScene === scene.id ? 'Viewing' : 'View scene', scene.id)}${orderButtons('scene', scene.id)}${action('edit-scene', 'Edit scene', scene.id)}${action('delete-scene', 'Delete scene', scene.id, '', 'danger-button')}</div></header><div class="section-heading"><h4>${scene.shots.length} ${scene.shots.length === 1 ? 'shot' : 'shots'}</h4><div class="heading-actions">${action('order-shots', 'Edit shot order', scene.id)}${action('create-shot', '+ Add shot', scene.id, '', 'primary')}</div></div>${scene.shots.length ? `<div class="shot-grid">${scene.shots.map((shot, index) => shotCard(shot, index, scene)).join('')}</div>` : '<p class="board-empty">No shots in this scene. Add a shot to get started.</p>'}</section>`).join('')}</div>` : '<div class="empty"><span class="empty-symbol">◈</span><h3>Your story starts with a scene.</h3><p>Use Add scene to create the first scene in this project.</p></div>'}`;
+    root().insertAdjacentHTML('beforeend', stage8.panel());
     if (historyOpen) {
       root().insertAdjacentHTML('beforeend', historyPanel());
       const form = root().querySelector('#history-form');
@@ -76,16 +79,19 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
       },
       async onMessage(message) {
         if (current !== synchronizer) return;
-        if (message.type === 'replay_start') {
+        if (message.type === 'asset_status' || message.type === 'agent_proposal') {
+          stage8.message(message);
+        } else if (message.type === 'replay_start') {
           if (!Number.isSafeInteger(message.boundary_seq) || message.boundary_seq < 0) throw new Error('Invalid replay boundary.');
           handoffBoundary = message.boundary_seq; renderPresence();
         } else if (message.type === 'replay_complete') {
           if (!Number.isSafeInteger(message.boundary_seq) || message.boundary_seq < 0 || message.boundary_seq !== handoffBoundary) throw new Error('Invalid replay completion boundary.');
           if (current.lastSeq < message.boundary_seq) await current.sync();
           if (current.lastSeq < message.boundary_seq) throw new Error('Replay boundary is not fully applied. Use Sync changes.');
+          await stage8.load(id);
         } else if (message.type === 'permissions') {
           accessMessage = message.message || `Project role: ${message.role}`;
-          if (message.access_revoked) { presence = []; status = 'revoked'; }
+          if (message.access_revoked) { stage8.dispose(); presence = []; status = 'revoked'; render(); }
           else if (message.role) onRoleChange(message.role);
           renderPresence();
         } else if (message.type === 'presence') {
@@ -163,15 +169,15 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
     try {
       if (!current.board) await current.initialize(); else await current.sync();
       if (current !== synchronizer || requestRevision !== revision || !root()) return;
-      scenes = current.board.scenes; connectionError = ''; render(); startSocket(current);
+      scenes = current.board.scenes; connectionError = ''; render(); stage8.load(id); startSocket(current);
     } catch (error) {
       if (current !== synchronizer || requestRevision !== revision || !root()) return;
-      if (current.board) { scenes = current.board.scenes; render(); startSocket(current); }
+      if (current.board) { scenes = current.board.scenes; render(); stage8.load(id); startSocket(current); }
       else root().innerHTML = action('reload', 'Retry loading storyboard');
       showError(error);
     }
   }
-  function dispose() { historyOpen = false; historyData = null; historical = null; historyBusy = false; historyError = ''; sequenceInput = ''; livePaused = false; socket?.close(); socket = null; status = 'offline'; presence = []; viewedScene = ''; connectionError = ''; accessMessage = ''; handoffBoundary = null; memberLookup = []; synchronizer?.stop(); synchronizer = null; revision++; projectID = ''; scenes = []; busy = false; }
+  function dispose() { stage8.dispose(); historyOpen = false; historyData = null; historical = null; historyBusy = false; historyError = ''; sequenceInput = ''; livePaused = false; socket?.close(); socket = null; status = 'offline'; presence = []; viewedScene = ''; connectionError = ''; accessMessage = ''; handoffBoundary = null; memberLookup = []; synchronizer?.stop(); synchronizer = null; revision++; projectID = ''; scenes = []; busy = false; }
   async function write(type, payload, opID, expectedProjectID, options) {
     const current = synchronizer;
     if (!current || projectID !== expectedProjectID) throw new Error('Storyboard view changed.');
@@ -254,6 +260,7 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   async function handle(button) {
     if (busy) return;
     const name = button.dataset.boardAction;
+    if (await stage8.handle(button)) return;
     const scene = scenes.find((item) => item.id === button.dataset.scene);
     const shot = scene?.shots.find((item) => item.id === button.dataset.shot);
     if (scene) { viewedScene = scene.id; socket?.viewScene(scene.id); }

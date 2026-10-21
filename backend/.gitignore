@@ -12,3 +12,6 @@ vendor/
 .idea/
 .vscode/
 .DS_Store
+
+# Local asset storage
+/data/
