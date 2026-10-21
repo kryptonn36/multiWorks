@@ -26,6 +26,10 @@ func TestIdempotencyConcurrencyAndReplayReconstruction(t *testing.T) {
 	if !duplicate.Duplicate || duplicate.Operation.ID != first.Operation.ID || duplicate.Operation.Seq != 1 {
 		t.Fatal("retry did not preserve the committed operation")
 	}
+	third := decode[ops.SubmitResponse](t, f.json(t, f.editor, "POST", f.path("/ops"), create, 200))
+	if !third.Duplicate || third.Operation.ID != first.Operation.ID {
+		t.Fatal("third identical request was not deduplicated")
+	}
 	conflicting := create
 	conflicting.Payload = json.RawMessage(`{"scene_id":"` + scene.String() + `","title":"Different content"}`)
 	f.json(t, f.editor, "POST", f.path("/ops"), conflicting, 409)
@@ -217,5 +221,80 @@ func TestWebSocketReplayAfterHandlerRestartAndRevocation(t *testing.T) {
 	current := decode[board.State](t, f.json(t, f.owner, "GET", f.path("/board"), nil, 200))
 	if current.LastSeq != 4 || current.Scenes[0].Title != "After restart" {
 		t.Fatal("revoked operations changed the board")
+	}
+}
+
+func TestSameShotFieldAndMoveDeleteRace(t *testing.T) {
+	f := newFixture(t)
+	scene, shot, other := uuid.New(), uuid.New(), uuid.New()
+	f.submit(t, f.owner, operation("scene.create", map[string]any{"scene_id": scene, "title": "Conflict board"}))
+	for _, id := range []uuid.UUID{shot, other} {
+		f.submit(t, f.owner, operation("shot.create", map[string]any{"scene_id": scene, "shot_id": id, "prompt": "Initial"}))
+	}
+	type outcome struct {
+		response ops.SubmitResponse
+		err      error
+	}
+	results := make(chan outcome, 2)
+	start := make(chan struct{})
+	for _, prompt := range []string{"Camera A", "Camera B"} {
+		request := operation("shot.update", map[string]any{"scene_id": scene, "shot_id": shot, "prompt": prompt})
+		request.BaseSeq = 3
+		go func() {
+			<-start
+			response, err := f.operations.Submit(context.Background(), f.project, f.editor.ID, request)
+			results <- outcome{response, err}
+		}()
+	}
+	close(start)
+	var last ops.Operation
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.response.Operation.Seq > last.Seq {
+			last = result.response.Operation
+		}
+	}
+	var payload struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(last.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	current := decode[board.State](t, f.json(t, f.owner, "GET", f.path("/board"), nil, 200))
+	if current.LastSeq != 5 || current.Scenes[0].Shots[0].Prompt != payload.Prompt {
+		t.Fatal("same-field conflict did not follow server sequence")
+	}
+	move := operation("shot.reorder", map[string]any{"scene_id": scene, "shot_ids": []uuid.UUID{other, shot}})
+	move.BaseSeq = 5
+	remove := operation("shot.delete", map[string]any{"scene_id": scene, "shot_id": other})
+	remove.BaseSeq = 5
+	start = make(chan struct{})
+	for _, request := range []ops.SubmitRequest{move, remove} {
+		go func() {
+			<-start
+			response, err := f.operations.Submit(context.Background(), f.project, f.editor.ID, request)
+			results <- outcome{response, err}
+		}()
+	}
+	close(start)
+	successes := 0
+	for range 2 {
+		result := <-results
+		if result.err == nil {
+			successes++
+		} else if ops.ErrorStatus(result.err) != 409 {
+			t.Fatalf("unexpected move/delete result: %v", result.err)
+		}
+	}
+	current = decode[board.State](t, f.json(t, f.owner, "GET", f.path("/board"), nil, 200))
+	if len(current.Scenes[0].Shots) != 1 || current.Scenes[0].Shots[0].ID != shot || current.LastSeq != 5+int64(successes) {
+		t.Fatal("move/delete race corrupted board or ordering")
+	}
+	historical := decode[board.State](t, f.json(t, f.owner, "GET", f.path(fmt.Sprintf("/history/%d", current.LastSeq)), nil, 200))
+	if !reflect.DeepEqual(board.Canonical(current), board.Canonical(historical)) {
+		t.Fatal("move/delete replay diverged from stored state")
 	}
 }

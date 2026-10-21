@@ -1,6 +1,7 @@
+FROM sqlc/sqlc:1.30.0 AS sqlc
 
 # Build stage
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.7-alpine AS builder
 
 WORKDIR /app
 
@@ -9,7 +10,9 @@ RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum* ./
 RUN go mod download
 
+COPY --from=sqlc /workspace/sqlc /usr/local/bin/sqlc
 COPY . .
+RUN sqlc generate
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server
 
 # Runtime stage

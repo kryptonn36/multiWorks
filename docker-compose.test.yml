@@ -20,6 +20,7 @@ services:
   test-api:
     profiles: [browser]
     build: ./backend
+    command: ["/bin/sh", "-c", "rm -f /tmp/stage9-started; exec ./server"]
     environment:
       PORT: ":8080"
       DATABASE_URL: postgres://multiworks_test:multiworks_test_password@test-db:5432/multiworks_test?sslmode=disable

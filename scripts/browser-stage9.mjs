@@ -27,6 +27,8 @@ function png() {
 }
 const browser = await launchBrowser();
 try {
+  const configured = await (await fetch(`${base}/config`)).json();
+  assert.equal(configured.target, 'http://test-api:8080', 'Browser checks require the isolated Stage 9 frontend.');
   const password = randomBytes(16).toString('hex');
   const people = [];
   for (const role of ['owner', 'editor']) {
@@ -59,7 +61,9 @@ try {
   ]); await applied(3);
   assert.equal(await b.evaluate('document.querySelector(".scene-heading h3").textContent'), 'Concurrent title');
   assert.equal(await b.evaluate('document.querySelector(".scene-description").textContent'), 'Concurrent description');
-  pass('Live collaboration and concurrent field edits converge in both sessions');
+  await a.click('[data-board-action="view-scene"]');
+  await b.wait('[...document.querySelectorAll(".presence-person")].some(person=>person.textContent.includes("Concurrent title"))');
+  pass('Live collaboration, viewed-scene presence, and concurrent field edits converge in both sessions');
   for (const prompt of ['First shot', 'Second shot']) { await a.click('[data-board-action="create-shot"]'); await a.fill('#modal-form [name=prompt]', prompt); await submit(a); }
   await applied(5);
   const shots = await a.evaluate('[...document.querySelectorAll(".shot-card")].map(card=>card.dataset.shotId)');
@@ -114,20 +118,31 @@ try {
   const rejected = await generate('Add a rejected proposal shot'); await decide(rejected, 'reject'); assert.equal((await api(`${projectPath}/board`, owner.token)).last_seq, 11);
   for (const token of ['invalid-json', 'missing-shot', 'oversized', 'timeout']) { const id = await generate(`Add a failure shot [mock:${token}]`); await a.wait(`document.querySelector('[data-proposal-id="${id}"] [data-proposal-status=failed]')`); }
   pass('Agent drafts stay unapplied until approval; rejection, stale checks, and failure tokens leave the board intact');
+  // Exercise seq-N restore while another collaborator edits after preview.
+  for (let seq=12;seq<=42;seq++) await api(`${projectPath}/ops`,owner.token,{client_id:'history-browser',op_id:randomUUID(),base_seq:0,type:'scene.update',payload:{scene_id:scene,title:`Frame ${seq}`}});
+  await applied(42);
+  await a.click('[data-board-action="toggle-history"]');
+  const preview=async()=>{await a.wait('!!document.querySelector("#history-form")&&!document.querySelector("#history-form button").disabled');await a.fill('#history-seq','40');await a.evaluate('document.querySelector("#history-form").requestSubmit()');await a.wait('document.querySelector("[data-history-seq]")?.dataset.historySeq==="40"');};
+  await preview();
+  await api(`${projectPath}/ops`,editor.token,{client_id:'concurrent-history',op_id:randomUUID(),base_seq:42,type:'scene.update',payload:{scene_id:scene,title:'Concurrent edit at 43'}});await applied(43);
+  await a.click('[data-board-action="restore-history"]');await a.submit();await a.wait('document.querySelector("#modal-error")?.textContent.length>0');await closeModal(a);
+  await preview();await a.click('[data-board-action="restore-history"]');await submit(a);await applied(44);
+  assert.equal(await b.evaluate('document.querySelector(".scene-heading h3").textContent'),'Frame 40');
+  pass('Restore to seq 40 rejects a stale preview, then commits a new operation that converges in both sessions');
   await api(`${projectPath}/members`, owner.token, { email: editor.email, role: 'viewer' }, 200);
-  await b.wait('document.querySelector("[data-access-message]")?.textContent.includes("viewer")');
+  await b.wait('document.querySelector(".project-facts strong")?.textContent.toLowerCase()==="viewer"');
   await b.click('[data-board-action="create-scene"]'); await b.fill('#modal-form [name=title]', 'Must be denied'); await b.submit(); await b.wait('document.querySelector("#modal-error")?.textContent.includes("editor or owner")'); await closeModal(b);
-  assert.equal((await api(`${projectPath}/board`, owner.token)).last_seq, 11);
+  assert.equal((await api(`${projectPath}/board`, owner.token)).last_seq, 44);
   pass('A mid-session role downgrade blocks writes through the UI with the existing JWT');
   log = await api(`${projectPath}/ops?after_seq=0&limit=500`, owner.token);
-  assert.deepEqual(log.operations.map(op => op.seq), Array.from({ length: 11 }, (_, n) => n + 1));
+  assert.deepEqual(log.operations.map(op => op.seq), Array.from({ length: 44 }, (_, n) => n + 1));
   const download = await fetch(`${base}/backend${projectPath}/assets/${assets.assets[0].id}`, { headers: { authorization: `Bearer ${editor.token}` } });
   assert.equal(download.status, 200); assert.deepEqual(Buffer.from(await download.arrayBuffer()), image);
   await a.call('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.equal(await a.evaluate('document.documentElement.scrollWidth<=innerWidth'), true); assert.deepEqual(a.errors, []); assert.deepEqual(b.errors, []);
   pass('Final board, operation ordering, persisted bytes, and mobile rendering are consistent');
   await mkdir(`${root}test-results`, { recursive: true });
-  await writeFile(`${root}test-results/stage9-browser.json`, JSON.stringify({ results, projectID: project.id, appliedSequence: 11 }, null, 2));
+  await writeFile(`${root}test-results/stage9-browser.json`, JSON.stringify({ results, projectID: project.id, appliedSequence: 44 }, null, 2));
   const screenshot = await a.call('Page.captureScreenshot', { format: 'png' });
   await writeFile(`${root}test-results/stage9-browser.png`, Buffer.from(screenshot.data, 'base64'));
 } finally { await browser.close(); }
