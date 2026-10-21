@@ -87,10 +87,14 @@ var proposalFields = map[string]string{
 
 // ValidateProposal runs a bounded, side-effect-free rehearsal. Approval still uses
 // the shared SQL operation engine, inside one transaction, for final validation.
-func ValidateProposal(state board.State, operations []ProposedOperation) error {
+func ValidateProposal(state board.State, operations []ProposedOperation, maxOps ...int) error {
+	limit := MaxProposalOperations
+	if len(maxOps) > 0 {
+		limit = maxOps[0]
+	}
 	raw, err := json.Marshal(operations)
-	if err != nil || len(raw) > MaxProposalBytes || len(operations) == 0 || len(operations) > MaxProposalOperations {
-		return fmt.Errorf("proposal must contain 1-20 operations within 64 KiB")
+	if err != nil || len(raw) > MaxProposalBytes || len(operations) == 0 || len(operations) > limit {
+		return fmt.Errorf("proposal must contain 1-%d operations within 64 KiB", limit)
 	}
 	actor := uuid.New()
 	touched := map[string]bool{}

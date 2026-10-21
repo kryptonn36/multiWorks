@@ -81,9 +81,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize asset storage: %v", err)
 	}
-	assetService := assets.NewService(database, storage, operationService)
+	assetService := assets.NewService(database, storage, operationService, assets.Limits{MaxUploadBytes: cfg.AssetMaxUploadBytes, MaxPixels: cfg.AssetMaxPixels})
 	assetHandler := assets.NewHandler(assetService)
-	agentService := agent.NewService(database, operationService)
+	agentService := agent.NewService(database, operationService, agent.Limits{MaxOps: cfg.AgentMaxOps, Timeout: cfg.AgentTimeout})
 	agentHandler := agent.NewHandler(agentService)
 	assetService.Publish = func(projectID uuid.UUID, asset assets.Asset) {
 		raw, err := json.Marshal(asset)

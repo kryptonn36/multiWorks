@@ -31,13 +31,14 @@ var unsupportedAction = regexp.MustCompile(`(?i)\b(delete|remove|update|fetch|do
 
 // Mock is local and deterministic in behavior; UUIDs are generated per proposal.
 // Instructions are data, never commands or executable code.
-func Mock(ctx context.Context, state board.State, instruction, mode string) ([]byte, error) {
+func Mock(ctx context.Context, state board.State, instruction, mode string, maxOps ...int) ([]byte, error) {
 	mode = mockMode(instruction, mode)
-	if mode == "normal" || mode == "delayed" || mode == "timeout" {
+	if mode == "timeout" {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if mode == "normal" || mode == "delayed" {
 		delay := 2 * time.Second
-		if mode == "timeout" {
-			delay = 10 * time.Second
-		}
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
@@ -64,7 +65,11 @@ func Mock(ctx context.Context, state board.State, instruction, mode string) ([]b
 	}
 	if mode == "too-many" {
 		items := []ops.ProposedOperation{}
-		for range ops.MaxProposalOperations + 1 {
+		limit := ops.MaxProposalOperations
+		if len(maxOps) > 0 {
+			limit = maxOps[0]
+		}
+		for range limit + 1 {
 			body, _ := json.Marshal(map[string]any{"scene_id": uuid.New(), "title": "Oversized proposal"})
 			items = append(items, ops.ProposedOperation{Type: "scene.create", Payload: body})
 		}

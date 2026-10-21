@@ -36,7 +36,7 @@ func TestAsyncAgentGeneration(t *testing.T) {
 		exec(`INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'owner'),($1,$3,'viewer')`, pid, owner, viewer)
 	}
 	operations := ops.NewService(database)
-	service := agent.NewService(database, operations)
+	service := agent.NewService(database, operations, agent.Limits{MaxOps: 20, Timeout: 3 * time.Second})
 	writes := 0
 	operations.SetPublisher(func(_ uuid.UUID, _ ops.Operation) { writes++ })
 	requestCtx, cancelRequest := context.WithCancel(ctx)
@@ -49,12 +49,12 @@ func TestAsyncAgentGeneration(t *testing.T) {
 	_, err = service.Decide(ctx, project, owner, proposal.ID, true)
 	status(t, err, 409)
 	// Claim then abandon a lease; another service instance recovers it from SQL.
-	job, err := db.New(database).ClaimAgentJob(ctx)
+	job, err := db.New(database).ClaimAgentJob(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
 	exec(`UPDATE agent_jobs SET locked_at=NOW()-INTERVAL '31 seconds' WHERE proposal_id=$1`, job.ProposalID)
-	restarted := agent.NewService(database, operations)
+	restarted := agent.NewService(database, operations, agent.Limits{MaxOps: 20, Timeout: 3 * time.Second})
 	if ok, err := restarted.ProcessOne(ctx); err != nil || !ok {
 		t.Fatalf("job recovery: %v %v", ok, err)
 	}

@@ -3,14 +3,20 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	AssetStorageRoot string
-	Port             string
-	DatabaseURL      string
-	JWTSecret        string
+	AssetStorageRoot    string
+	AssetMaxUploadBytes int64
+	AssetMaxPixels      int64
+	AgentMaxOps         int
+	AgentTimeout        time.Duration
+	Port                string
+	DatabaseURL         string
+	JWTSecret           string
 }
 
 func Load() (Config, error) {
@@ -20,6 +26,32 @@ func Load() (Config, error) {
 		DatabaseURL:      os.Getenv("DATABASE_URL"),
 		JWTSecret:        os.Getenv("JWT_SECRET"),
 	}
+
+	if strings.TrimSpace(cfg.AssetStorageRoot) == "" || strings.ContainsRune(cfg.AssetStorageRoot, 0) {
+		return Config{}, fmt.Errorf("ASSET_STORAGE_ROOT must be a valid non-empty path")
+	}
+	if root, ok := os.LookupEnv("ASSET_STORAGE_ROOT"); ok && strings.TrimSpace(root) == "" {
+		return Config{}, fmt.Errorf("ASSET_STORAGE_ROOT must be a valid non-empty path")
+	}
+	var err error
+	cfg.AssetMaxUploadBytes, err = positiveInteger("ASSET_MAX_UPLOAD_BYTES", 10485760, 1073741824)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.AssetMaxPixels, err = positiveInteger("ASSET_MAX_PIXELS", 25000000, 100000000)
+	if err != nil {
+		return Config{}, err
+	}
+	maxOps, err := positiveInteger("AGENT_MAX_OPS", 20, 100)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.AgentMaxOps = int(maxOps)
+	timeout, err := positiveInteger("AGENT_TIMEOUT_SECONDS", 15, 300)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.AgentTimeout = time.Duration(timeout) * time.Second
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL environment variable is required")
@@ -46,4 +78,16 @@ func getEnv(key, fallback string) string {
 	}
 
 	return value
+}
+
+func positiveInteger(key string, fallback, maximum int64) (int64, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 1 || value > maximum {
+		return 0, fmt.Errorf("%s must be an integer between 1 and %d", key, maximum)
+	}
+	return value, nil
 }

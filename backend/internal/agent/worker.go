@@ -31,10 +31,10 @@ func (s *Service) Run(ctx context.Context) {
 }
 
 func (s *Service) ProcessOne(parent context.Context) (bool, error) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, s.Limits.Timeout+5*time.Second)
 	defer cancel()
 	queries := db.New(s.Database)
-	job, err := queries.ClaimAgentJob(ctx)
+	job, err := queries.ClaimAgentJob(ctx, max(30, int64((s.Limits.Timeout+time.Second-1)/time.Second)+15))
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -55,7 +55,7 @@ func (s *Service) ProcessOne(parent context.Context) (bool, error) {
 	} else if len(job.BoardContext) > MaxContextBytes || json.Unmarshal(job.BoardContext, &state) != nil || state.LastSeq != row.BaseSeq || board.Validate(state, row.ProjectID) != nil {
 		reason = "Stored board context is invalid."
 	} else {
-		proposed, reason = generate(ctx, state, row.Instruction, row.GenerationMode)
+		proposed, reason = s.generate(ctx, state, row.Instruction, row.GenerationMode)
 	}
 	// Leave an interrupted job leased for recovery after a process restart.
 	if parent.Err() != nil {

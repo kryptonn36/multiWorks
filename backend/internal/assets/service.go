@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
@@ -20,14 +21,19 @@ import (
 )
 
 type Service struct {
+	Limits     Limits
 	Database   *sql.DB
 	Storage    *Storage
 	Operations *ops.Service
 	Publish    func(uuid.UUID, Asset)
 }
 
-func NewService(database *sql.DB, storage *Storage, operations *ops.Service) *Service {
-	return &Service{Database: database, Storage: storage, Operations: operations}
+func NewService(database *sql.DB, storage *Storage, operations *ops.Service, configured ...Limits) *Service {
+	limits := Limits{MaxUploadBytes: MaxUploadBytes, MaxPixels: MaxPixels}
+	if len(configured) > 0 {
+		limits = configured[0]
+	}
+	return &Service{Database: database, Storage: storage, Operations: operations, Limits: limits}
 }
 func (s *Service) Access(ctx context.Context, project, user uuid.UUID, write bool) error {
 	if user == uuid.Nil {
@@ -45,13 +51,13 @@ func (s *Service) Access(ctx context.Context, project, user uuid.UUID, write boo
 	}
 	return nil
 }
-func decode(raw []byte) (image.Image, string, error) {
+func (s *Service) decode(raw []byte) (image.Image, string, error) {
 	config, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil || (format != "jpeg" && format != "png" && format != "webp") {
 		return nil, "", ops.NewError(400, "upload a valid JPEG, PNG, or WebP image")
 	}
-	if config.Width <= 0 || config.Height <= 0 || config.Width > 8192 || config.Height > 8192 || int64(config.Width)*int64(config.Height) > MaxPixels {
-		return nil, "", ops.NewError(400, "image dimensions exceed the 4 million pixel limit")
+	if config.Width <= 0 || config.Height <= 0 || config.Width > 8192 || config.Height > 8192 || int64(config.Width)*int64(config.Height) > s.Limits.MaxPixels {
+		return nil, "", ops.NewError(400, fmt.Sprintf("image dimensions exceed the configured limit (%d pixels; 8192 per side)", s.Limits.MaxPixels))
 	}
 	decoded, actual, err := image.Decode(bytes.NewReader(raw))
 	if err != nil || actual != format {
@@ -70,14 +76,14 @@ func (s *Service) Upload(ctx context.Context, project, shot, user uuid.UUID, rea
 		}
 		return result, err
 	}
-	raw, err := io.ReadAll(io.LimitReader(reader, MaxUploadBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(reader, s.Limits.MaxUploadBytes+1))
 	if err != nil {
 		return result, ops.NewError(400, "could not read uploaded image")
 	}
-	if int64(len(raw)) > MaxUploadBytes {
-		return result, ops.NewError(413, "image exceeds the 10 MiB upload limit")
+	if int64(len(raw)) > s.Limits.MaxUploadBytes {
+		return result, ops.NewError(413, fmt.Sprintf("image exceeds the %d byte upload limit", s.Limits.MaxUploadBytes))
 	}
-	_, format, err := decode(raw)
+	_, format, err := s.decode(raw)
 	if err != nil {
 		return result, err
 	}

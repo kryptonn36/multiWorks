@@ -102,3 +102,29 @@ func TestMockTokensAndCancellation(t *testing.T) {
 		t.Fatal("unsupported instruction generated an edit")
 	}
 }
+
+func TestConfiguredGenerationTimeoutAndOperationLimit(t *testing.T) {
+	state := proposalBoard()
+	service := NewService(nil, nil, Limits{MaxOps: 1, Timeout: 20 * time.Millisecond})
+	start := time.Now()
+	raw, reason := service.generate(context.Background(), state, "Add a shot", "normal")
+	if reason == "" || string(raw) != "[]" || time.Since(start) > time.Second {
+		t.Fatalf("configured deadline was not enforced: %s %v", reason, time.Since(start))
+	}
+	parent := uuid.New()
+	operations := []ops.ProposedOperation{proposed("scene.create", map[string]any{"scene_id": parent, "title": "New"}), proposed("shot.create", map[string]any{"scene_id": parent, "shot_id": uuid.New()})}
+	response, _ := json.Marshal(map[string]any{"operations": operations})
+	if _, err := DecodeResponse(state, response, 1); err == nil {
+		t.Fatal("configured operation limit ignored")
+	}
+	if _, err := DecodeResponse(state, response, 2); err != nil {
+		t.Fatalf("valid configured operation limit rejected: %v", err)
+	}
+	raw, err := Mock(context.Background(), state, "Add a shot [mock:oversized]", "normal", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeResponse(state, raw, 30); err == nil {
+		t.Fatal("oversized mock did not respect configured limit")
+	}
+}

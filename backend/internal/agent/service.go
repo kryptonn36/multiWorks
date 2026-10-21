@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/kryptonn36/multiWorks/internal/board"
@@ -14,13 +15,18 @@ import (
 )
 
 type Service struct {
+	Limits     Limits
 	Database   *sql.DB
 	Operations *ops.Service
 	Publish    func(uuid.UUID, Proposal)
 }
 
-func NewService(database *sql.DB, operations *ops.Service) *Service {
-	return &Service{Database: database, Operations: operations}
+func NewService(database *sql.DB, operations *ops.Service, configured ...Limits) *Service {
+	limits := Limits{MaxOps: ops.MaxProposalOperations, Timeout: 15 * time.Second}
+	if len(configured) > 0 {
+		limits = configured[0]
+	}
+	return &Service{Database: database, Operations: operations, Limits: limits}
 }
 func (s *Service) access(ctx context.Context, project, user uuid.UUID, write bool) error {
 	if user == uuid.Nil {
@@ -48,7 +54,7 @@ func (s *Service) Generate(ctx context.Context, project, user uuid.UUID, instruc
 	if err != nil {
 		return Proposal{}, err
 	}
-	proposed, reason := generate(ctx, state, instruction, mode)
+	proposed, reason := s.generate(ctx, state, instruction, mode)
 	status := "pending"
 	if reason != "" {
 		status = "failed"
@@ -156,7 +162,7 @@ func (s *Service) Decide(ctx context.Context, project, user, id uuid.UUID, appro
 				if json.Unmarshal(row.ProposedOps, &proposed) != nil {
 					return ops.NewError(409, "stored proposal is invalid")
 				}
-				if err := ops.ValidateProposal(state, proposed); err != nil {
+				if err := ops.ValidateProposal(state, proposed, s.Limits.MaxOps); err != nil {
 					return ops.NewError(409, "stored proposal is invalid: "+err.Error())
 				}
 				for index, operation := range proposed {

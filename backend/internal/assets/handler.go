@@ -48,8 +48,8 @@ func (h *Handler) Upload(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "shot not found"})
 		return
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxUploadBytes+(64<<10))
-	if err := c.Request.ParseMultipartForm(MaxUploadBytes); err != nil {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.service.Limits.MaxUploadBytes+(64<<10))
+	if err := c.Request.ParseMultipartForm(min(h.service.Limits.MaxUploadBytes, 1<<20)); err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {
 			c.JSON(413, gin.H{"error": "image exceeds the upload limit"})

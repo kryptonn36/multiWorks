@@ -10,6 +10,11 @@ import (
 
 const MaxContextBytes = 256 * 1024
 
+type Limits struct {
+	MaxOps  int
+	Timeout time.Duration
+}
+
 type ProposeRequest struct {
 	Instruction string `json:"instruction"`
 	Mode        string `json:"mode"`

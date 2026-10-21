@@ -7,7 +7,12 @@ import (
 )
 
 const MaxUploadBytes int64 = 10 << 20
-const MaxPixels = 4_000_000
+const MaxPixels int64 = 25_000_000
+
+type Limits struct {
+	MaxUploadBytes int64
+	MaxPixels      int64
+}
 
 type Asset struct {
 	ID           uuid.UUID `json:"id"`

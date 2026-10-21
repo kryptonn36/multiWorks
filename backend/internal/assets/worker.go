@@ -58,14 +58,14 @@ func (s *Service) ProcessOne(parent context.Context) (bool, error) {
 			return err
 		}
 		defer file.Close()
-		raw, err := io.ReadAll(io.LimitReader(file, MaxUploadBytes+1))
+		raw, err := io.ReadAll(io.LimitReader(file, s.Limits.MaxUploadBytes+1))
 		if err != nil {
 			return err
 		}
-		if int64(len(raw)) > MaxUploadBytes {
+		if int64(len(raw)) > s.Limits.MaxUploadBytes {
 			return errors.New("original exceeds upload limit")
 		}
-		source, _, err := decode(raw)
+		source, _, err := s.decode(raw)
 		if err != nil {
 			return err
 		}

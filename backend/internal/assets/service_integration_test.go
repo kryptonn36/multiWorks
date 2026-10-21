@@ -141,6 +141,9 @@ func TestStage8AssetsAgentAndHistory(t *testing.T) {
 	}
 	service := assets.NewService(database, storage, operations)
 	raw := imageBytes(t, 640, 320)
+	limited := assets.NewService(database, storage, operations, assets.Limits{MaxUploadBytes: int64(len(raw) - 1), MaxPixels: assets.MaxPixels})
+	_, err = limited.Upload(ctx, p, shot, user, bytes.NewReader(raw))
+	status(t, err, 413)
 	first, err := service.Upload(ctx, p, shot, user, bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +255,7 @@ func TestStage8AssetsAgentAndHistory(t *testing.T) {
 		t.Fatal("failed job not surfaced")
 	}
 	// Proposals are read-only until approved; failed mocks never mutate the log.
-	agents := agent.NewService(database, operations)
+	agents := agent.NewService(database, operations, agent.Limits{MaxOps: 20, Timeout: 3 * time.Second})
 	for _, mode := range []string{"malformed", "invalid", "oversized", "timeout"} {
 		proposal, err := agents.Generate(ctx, p, user, "Add a dramatic shot", mode)
 		if err != nil || proposal.Status != "failed" || len(proposal.Operations) != 0 {

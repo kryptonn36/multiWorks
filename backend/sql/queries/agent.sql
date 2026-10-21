@@ -28,7 +28,7 @@ INSERT INTO agent_jobs(proposal_id,board_context) VALUES(sqlc.arg(proposal_id),s
 -- name: ClaimAgentJob :one
 WITH candidate AS (
  SELECT proposal_id FROM agent_jobs
- WHERE status='pending' OR (status='processing' AND locked_at<NOW()-INTERVAL '30 seconds')
+ WHERE status='pending' OR (status='processing' AND locked_at<NOW()-INTERVAL '1 second'*sqlc.arg(lease_seconds)::bigint)
  ORDER BY created_at,proposal_id FOR UPDATE SKIP LOCKED LIMIT 1
 )
 UPDATE agent_jobs j SET status='processing',attempts=j.attempts+1,locked_at=NOW(),updated_at=NOW()

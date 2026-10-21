@@ -53,15 +53,15 @@ func (q *Queries) AgentShotIDExists(ctx context.Context, id uuid.UUID) (bool, er
 const claimAgentJob = `-- name: ClaimAgentJob :one
 WITH candidate AS (
  SELECT proposal_id FROM agent_jobs
- WHERE status='pending' OR (status='processing' AND locked_at<NOW()-INTERVAL '30 seconds')
+ WHERE status='pending' OR (status='processing' AND locked_at<NOW()-INTERVAL '1 second'*$1::bigint)
  ORDER BY created_at,proposal_id FOR UPDATE SKIP LOCKED LIMIT 1
 )
 UPDATE agent_jobs j SET status='processing',attempts=j.attempts+1,locked_at=NOW(),updated_at=NOW()
 FROM candidate WHERE j.proposal_id=candidate.proposal_id RETURNING j.proposal_id, j.board_context, j.status, j.attempts, j.locked_at, j.created_at, j.updated_at
 `
 
-func (q *Queries) ClaimAgentJob(ctx context.Context) (AgentJob, error) {
-	row := q.db.QueryRowContext(ctx, claimAgentJob)
+func (q *Queries) ClaimAgentJob(ctx context.Context, leaseSeconds int64) (AgentJob, error) {
+	row := q.db.QueryRowContext(ctx, claimAgentJob, leaseSeconds)
 	var i AgentJob
 	err := row.Scan(
 		&i.ProposalID,

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -57,14 +56,14 @@ func (s *Service) capture(ctx context.Context, project, user uuid.UUID, instruct
 	return state, mode, tx.Commit()
 }
 
-func generate(ctx context.Context, state board.State, instruction, mode string) (json.RawMessage, string) {
-	generationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+func (s *Service) generate(ctx context.Context, state board.State, instruction, mode string) (json.RawMessage, string) {
+	generationCtx, cancel := context.WithTimeout(ctx, s.Limits.Timeout)
 	defer cancel()
-	raw, err := Mock(generationCtx, state, instruction, mode)
+	raw, err := Mock(generationCtx, state, instruction, mode, s.Limits.MaxOps)
 	if err != nil {
 		return json.RawMessage(`[]`), "Mock agent timed out. Try another proposal."
 	}
-	proposed, err := DecodeResponse(state, raw)
+	proposed, err := DecodeResponse(state, raw, s.Limits.MaxOps)
 	if err != nil {
 		return json.RawMessage(`[]`), "Agent proposal failed validation: " + err.Error()
 	}
@@ -73,7 +72,7 @@ func generate(ctx context.Context, state board.State, instruction, mode string) 
 
 // DecodeResponse is also the boundary for any future provider. No output is
 // executable until size/depth, strict schema, and project references are checked.
-func DecodeResponse(state board.State, raw []byte) (json.RawMessage, error) {
+func DecodeResponse(state board.State, raw []byte, maxOps ...int) (json.RawMessage, error) {
 	if err := ops.ValidateProposalJSON(raw); err != nil {
 		return nil, err
 	}
@@ -89,7 +88,7 @@ func DecodeResponse(state board.State, raw []byte) (json.RawMessage, error) {
 	if decoder.Decode(&extra) != io.EOF {
 		return nil, ops.NewError(400, "agent returned trailing JSON")
 	}
-	if err := ops.ValidateProposal(state, response.Operations); err != nil {
+	if err := ops.ValidateProposal(state, response.Operations, maxOps...); err != nil {
 		return nil, err
 	}
 	proposed, err := json.Marshal(response.Operations)
