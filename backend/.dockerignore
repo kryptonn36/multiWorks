@@ -1,0 +1,11 @@
+
+.git
+.env
+.env.*
+!.env.example
+bin/
+tmp/
+coverage.out
+vendor/
+node_modules/
+frontend/node_modules/
