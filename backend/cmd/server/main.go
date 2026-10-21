@@ -16,6 +16,7 @@ import (
 	"github.com/kryptonn36/multiWorks/internal/auth"
 	"github.com/kryptonn36/multiWorks/internal/config"
 	"github.com/kryptonn36/multiWorks/internal/db"
+	"github.com/kryptonn36/multiWorks/internal/history"
 	"github.com/kryptonn36/multiWorks/internal/ops"
 	"github.com/kryptonn36/multiWorks/internal/project"
 	"github.com/kryptonn36/multiWorks/internal/storyboard"
@@ -57,7 +58,8 @@ func main() {
 	operationService := ops.NewService(database)
 	websocketHandler := websocket.NewHandler(database, hub, operationService)
 	opsHandler := ops.NewHandlerWithService(operationService)
-	projectHandler.SetMembershipPublisher(hub.PermissionsChanged)
+	historyHandler := history.NewHandler(history.NewService(history.NewRepository(database), operationService))
+	projectHandler.SetMembershipPublisher(websocketHandler.MembershipChanged)
 	workspaceHandler.SetMembershipPublisher(websocketHandler.WorkspacePermissionsChanged)
 
 	operationService.SetPublisher(func(projectID uuid.UUID, operation ops.Operation) {
@@ -147,6 +149,9 @@ func main() {
 	router.GET("/api/projects/:projectID/ws", websocketHandler.Connect)
 	api.POST("/projects/:projectID/ops", opsHandler.Submit)
 	api.GET("/projects/:projectID/ops", opsHandler.Replay)
+	api.GET("/projects/:projectID/history", historyHandler.List)
+	api.GET("/projects/:projectID/history/:seq", historyHandler.GetAtSequence)
+	api.POST("/projects/:projectID/history/:seq/restore", historyHandler.Restore)
 
 	server := &http.Server{
 		Addr:              cfg.Port,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kryptonn36/multiWorks/internal/db"
 	"net/http"
 	"strings"
 
@@ -114,18 +115,7 @@ func projectRoleTx(
 	tx *sql.Tx,
 	projectID, userID uuid.UUID,
 ) (string, error) {
-	var role string
-	err := tx.QueryRowContext(ctx, `
-		SELECT pm.role
-		FROM project_members pm
-		JOIN projects p ON p.id = pm.project_id
-		JOIN workspace_members wm
-		  ON wm.workspace_id = p.workspace_id
-		 AND wm.user_id = pm.user_id
-		WHERE pm.project_id = $1
-		  AND pm.user_id = $2
-	`, projectID, userID).Scan(&role)
-	return role, err
+	return db.New(tx).GetOperationRole(ctx, db.GetOperationRoleParams{ProjectID: projectID, UserID: userID})
 }
 
 // Submit is the single write entry point for storyboard operations.
@@ -179,13 +169,7 @@ func ensureScene(
 	tx *sql.Tx,
 	projectID, sceneID uuid.UUID,
 ) error {
-	var exists bool
-	err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-		    SELECT 1 FROM scenes
-		    WHERE id = $1 AND project_id = $2
-		)
-	`, sceneID, projectID).Scan(&exists)
+	exists, err := db.New(tx).SceneExists(ctx, db.SceneExistsParams{SceneID: sceneID, ProjectID: projectID})
 	if err != nil {
 		return err
 	}
@@ -200,17 +184,7 @@ func ensureShot(
 	tx *sql.Tx,
 	projectID, sceneID, shotID uuid.UUID,
 ) error {
-	var exists bool
-	err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-		    SELECT 1
-		    FROM shots s
-		    JOIN scenes sc ON sc.id = s.scene_id
-		    WHERE s.id = $1
-		      AND s.scene_id = $2
-		      AND sc.project_id = $3
-		)
-	`, shotID, sceneID, projectID).Scan(&exists)
+	exists, err := db.New(tx).ShotExists(ctx, db.ShotExistsParams{ShotID: shotID, SceneID: sceneID, ProjectID: projectID})
 	if err != nil {
 		return err
 	}
@@ -237,20 +211,7 @@ func applyOperation(
 			return opError(http.StatusBadRequest, "valid title and description are required")
 		}
 
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO scenes (
-				id, project_id, title, description, position, created_by
-			)
-			VALUES (
-				$1, $2, $3, $4,
-				COALESCE(
-					(SELECT MAX(position) + 1 FROM scenes WHERE project_id = $2),
-					0
-				),
-				$5
-			)
-		`, sceneID, projectID, strings.TrimSpace(*p.Title),
-			valueOrEmpty(p.Description), userID)
+		_, err = db.New(tx).CreateOperationScene(ctx, db.CreateOperationSceneParams{SceneID: sceneID, ProjectID: projectID, Title: strings.TrimSpace(*p.Title), Description: valueOrEmpty(p.Description), UserID: userID})
 		return err
 
 	case "scene.update":
@@ -271,13 +232,7 @@ func applyOperation(
 			return err
 		}
 
-		_, err = tx.ExecContext(ctx, `
-			UPDATE scenes
-			SET title = COALESCE($3, title),
-			    description = COALESCE($4, description),
-			    updated_at = NOW()
-			WHERE id = $1 AND project_id = $2
-		`, sceneID, projectID, p.Title, p.Description)
+		_, err = db.New(tx).UpdateOperationScene(ctx, db.UpdateOperationSceneParams{Title: db.NullableString(p.Title), Description: db.NullableString(p.Description), SceneID: sceneID, ProjectID: projectID})
 		return err
 
 	case "scene.delete":
@@ -285,16 +240,11 @@ func applyOperation(
 		if err != nil {
 			return opError(http.StatusBadRequest, "valid scene_id is required")
 		}
-		result, err := tx.ExecContext(ctx, `
-			DELETE FROM scenes WHERE id = $1 AND project_id = $2
-		`, sceneID, projectID)
+		result, err := db.New(tx).DeleteOperationScene(ctx, db.DeleteOperationSceneParams{SceneID: sceneID, ProjectID: projectID})
 		if err != nil {
 			return err
 		}
-		n, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
+		n := result
 		if n == 0 {
 			return opError(http.StatusConflict, "scene was already deleted")
 		}
@@ -318,17 +268,7 @@ func applyOperation(
 			return err
 		}
 
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO shots (
-			    id, scene_id, prompt, style, notes, image_url, position, created_by
-			)
-			VALUES (
-			    $1, $2, $3, $4, $5, $6,
-			    COALESCE((SELECT MAX(position) + 1 FROM shots WHERE scene_id = $2), 0),
-			    $7
-			)
-		`, shotID, sceneID, valueOrEmpty(p.Prompt), valueOrEmpty(p.Style),
-			valueOrEmpty(p.Notes), p.ImageURL, userID)
+		_, err = db.New(tx).CreateOperationShot(ctx, db.CreateOperationShotParams{ShotID: shotID, SceneID: sceneID, Prompt: valueOrEmpty(p.Prompt), Style: valueOrEmpty(p.Style), Notes: valueOrEmpty(p.Notes), ImageUrl: db.NullableString(p.ImageURL), UserID: userID})
 		return err
 
 	case "shot.update":
@@ -355,30 +295,9 @@ func applyOperation(
 		// Field-level last-writer-wins: each operation changes only fields supplied.
 		// An omitted field is preserved.
 		if p.ImageURL != nil {
-			_, err = tx.ExecContext(ctx, `
-				UPDATE shots
-				SET prompt = COALESCE($4, prompt),
-				    style = COALESCE($5, style),
-				    notes = COALESCE($6, notes),
-				    image_url = $7,
-				    updated_at = NOW()
-				WHERE id = $1 AND scene_id = $2
-				  AND EXISTS (
-				    SELECT 1 FROM scenes WHERE id = $2 AND project_id = $3
-				  )
-			`, shotID, sceneID, projectID, p.Prompt, p.Style, p.Notes, p.ImageURL)
+			_, err = db.New(tx).UpdateOperationShotWithImage(ctx, db.UpdateOperationShotWithImageParams{Prompt: db.NullableString(p.Prompt), Style: db.NullableString(p.Style), Notes: db.NullableString(p.Notes), ImageUrl: db.NullableString(p.ImageURL), ShotID: shotID, SceneID: sceneID, ProjectID: projectID})
 		} else {
-			_, err = tx.ExecContext(ctx, `
-				UPDATE shots
-				SET prompt = COALESCE($4, prompt),
-				    style = COALESCE($5, style),
-				    notes = COALESCE($6, notes),
-				    updated_at = NOW()
-				WHERE id = $1 AND scene_id = $2
-				  AND EXISTS (
-				    SELECT 1 FROM scenes WHERE id = $2 AND project_id = $3
-				  )
-			`, shotID, sceneID, projectID, p.Prompt, p.Style, p.Notes)
+			_, err = db.New(tx).UpdateOperationShot(ctx, db.UpdateOperationShotParams{Prompt: db.NullableString(p.Prompt), Style: db.NullableString(p.Style), Notes: db.NullableString(p.Notes), ShotID: shotID, SceneID: sceneID, ProjectID: projectID})
 		}
 		return err
 
@@ -391,19 +310,11 @@ func applyOperation(
 		if err != nil {
 			return opError(http.StatusBadRequest, "valid shot_id is required")
 		}
-		result, err := tx.ExecContext(ctx, `
-			DELETE FROM shots s
-			USING scenes sc
-			WHERE s.id = $1 AND s.scene_id = $2
-			  AND sc.id = s.scene_id AND sc.project_id = $3
-		`, shotID, sceneID, projectID)
+		result, err := db.New(tx).DeleteOperationShot(ctx, db.DeleteOperationShotParams{ShotID: shotID, SceneID: sceneID, ProjectID: projectID})
 		if err != nil {
 			return err
 		}
-		n, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
+		n := result
 		if n == 0 {
 			return opError(http.StatusConflict, "shot was already deleted")
 		}
@@ -415,27 +326,20 @@ func applyOperation(
 			return opError(http.StatusBadRequest, err.Error())
 		}
 		var count int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM scenes WHERE project_id = $1`,
-			projectID,
-		).Scan(&count); err != nil {
+		countProjectScenesResult, countProjectScenesErr := db.New(tx).CountProjectScenes(ctx, projectID)
+		count = int(countProjectScenesResult)
+		if err := countProjectScenesErr; err != nil {
 			return err
 		}
 		if count != len(ids) {
 			return opError(http.StatusConflict, "scene order must include every scene exactly once")
 		}
 		for pos, id := range ids {
-			result, err := tx.ExecContext(ctx, `
-				UPDATE scenes SET position = $1, updated_at = NOW()
-				WHERE id = $2 AND project_id = $3
-			`, pos, id, projectID)
+			result, err := db.New(tx).ReorderOperationScene(ctx, db.ReorderOperationSceneParams{Position: int64(pos), ID: id, ProjectID: projectID})
 			if err != nil {
 				return err
 			}
-			n, err := result.RowsAffected()
-			if err != nil {
-				return err
-			}
+			n := result
 			if n != 1 {
 				return opError(http.StatusConflict, "scene order contains a scene from another project")
 			}
@@ -455,30 +359,20 @@ func applyOperation(
 			return opError(http.StatusBadRequest, err.Error())
 		}
 		var count int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM shots WHERE scene_id = $1`,
-			sceneID,
-		).Scan(&count); err != nil {
+		countSceneShotsResult, countSceneShotsErr := db.New(tx).CountSceneShots(ctx, sceneID)
+		count = int(countSceneShotsResult)
+		if err := countSceneShotsErr; err != nil {
 			return err
 		}
 		if count != len(ids) {
 			return opError(http.StatusConflict, "shot order must include every shot exactly once")
 		}
 		for pos, id := range ids {
-			result, err := tx.ExecContext(ctx, `
-				UPDATE shots s SET position = $1, updated_at = NOW()
-				WHERE s.id = $2 AND s.scene_id = $3
-				  AND EXISTS (
-				    SELECT 1 FROM scenes WHERE id = $3 AND project_id = $4
-				  )
-			`, pos, id, sceneID, projectID)
+			result, err := db.New(tx).ReorderOperationShot(ctx, db.ReorderOperationShotParams{Position: int64(pos), ID: id, SceneID: sceneID, ProjectID: projectID})
 			if err != nil {
 				return err
 			}
-			n, err := result.RowsAffected()
-			if err != nil {
-				return err
-			}
+			n := result
 			if n != 1 {
 				return opError(http.StatusConflict, "shot order contains a shot from another scene")
 			}

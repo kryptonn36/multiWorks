@@ -132,7 +132,7 @@ project with role `editor` using the existing People/Add member forms.
 4. In the owner session, open Project **People → Manage access** for the editor,
    change its role to `viewer`, and save. Keep the other session's storyboard
    open. Its **Your access** value and role-change message should update promptly,
-   without waiting for the five-second fallback. Its read connection remains open.
+   without waiting for the five-second fallback. Its old editor connection closes and reconnects with viewer access.
 5. In that viewer session, try adding/editing a scene. Controls remain available
    for testing; the backend should return **editor or owner role required**, and
    the applied sequence should not advance for the rejected operation. Owner edits
@@ -149,11 +149,61 @@ capped at that boundary, then `replay_complete` with the same boundary. Subseque
 applied cursor by itself. The UI still buffers gaps and deduplicates overlap.
 
 Project/workspace membership upserts notify affected sockets only after their
-SQL statements commit. Downgrading an editor revokes write access while retaining
-read access. There is currently no remove-member API/UI; no deletion action was
+SQL statements commit. Downgrading an editor closes the old socket; a fresh ticket reconnects the user
+with viewer read access. There is currently no remove-member API/UI; no deletion action was
 added. Full membership removal is covered by database-backed tests: a post-commit
 hub signal sends `permissions` with `access_revoked: true` and closes the socket;
 an out-of-band SQL removal without a signal is caught by the periodic check.
 The frontend stops reconnecting after full revocation; reopen the project once
 access is restored. The hub is process-local, so this guarantee currently applies
 to one API instance; multiple replicas need a shared event bus.
+
+
+## History, snapshots, and restore
+
+Migration `00006_snapshots.sql` creates the snapshot store and preserves an exact
+checkpoint for existing projects. New projects capture their initial board before
+the first operation. Further snapshots are saved atomically with every 100th
+operation and every successful restore. No operation history is deleted.
+
+Open a project and click **History**. The panel lists up to 100 snapshots and
+recent operation records. Select **Version N**, or enter a sequence and click
+**Preview version**, to view its scenes and shots without changing the live board.
+Fields stay unrestricted for testing backend errors, including negative,
+non-numeric, or future sequences. The history listing API accepts `before_seq`
+for older metadata; the sequence field can preview older versions directly.
+
+Click **Restore this version → Restore version** to create a new version containing
+the previewed board. The live sequence advances; it never resets to the historical
+number. Other connected clients receive `restore_board`, while disconnected
+clients apply it during normal replay. The preview is separate from the live board.
+
+The preview records the current sequence it was prepared against. If someone edits
+before you confirm restore, the backend returns **board changed since restore was
+prepared**. Close the dialog and preview the desired version again before retrying.
+For a lost response, close the dialog and use **Retry pending write**; it retains
+the original restore endpoint, client/op IDs, target, and expected sequence.
+
+Manual checks:
+
+1. Create a scene and shot, note the applied sequence, then edit the scene title.
+2. Preview the earlier sequence. Verify the old title/shot appear in the preview
+   while the live board stays unchanged. Restore it and verify both browser
+   sessions converge at a new, higher sequence. Preview the later pre-restore
+   sequence to confirm that history still exists.
+3. Preview a version in one editor session, then edit the board in another before
+   confirming restore. Expect a conflict; the concurrent edit must remain intact.
+4. Pause live in the second session, perform a restore in the first, and reconnect
+   the second. It should apply the restore once and reach the same applied sequence.
+5. Change the second account from editor to viewer through People → Manage access.
+   Its old socket must close, then reconnect using a fresh ticket with viewer
+   access. History previews remain available; restore and ordinary writes should
+   return backend permission errors. Controls remain available for these tests.
+6. At sequence 100, refresh History and verify a snapshot at 100. A successful
+   restore also creates a snapshot at its new sequence.
+
+Projects with complete operation logs can reconstruct earlier versions without
+an older snapshot. Legacy data predating the operation log may lack a recoverable
+initial state; such requests return 409 rather than inventing historical content.
+Full membership removal still has no API/UI endpoint; its shutdown hook and the
+periodic fallback are covered by database tests.

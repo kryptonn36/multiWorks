@@ -14,6 +14,13 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   let accessMessage = '';
   let handoffBoundary = null;
   let memberLookup = [];
+  let historyOpen = false;
+  let historyData;
+  let historical;
+  let historyBaseSeq;
+  let historyBusy = false;
+  let historyError = '';
+  let sequenceInput = '';
   const clientID = tabClientID(storage);
   let scenes = [];
   let revision = 0;
@@ -32,7 +39,13 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
   }
   function render() {
     if (!root()) return;
-    root().innerHTML = `<div id="board-presence"></div><div class="section-heading"><div><h2>Storyboard <span class="count">${scenes.length} scenes</span></h2><p>Plan your scenes, arrange your shots, and build your story.</p></div><div class="heading-actions">${synchronizer?.pending ? action('retry-write', 'Retry pending write') : ''}${action('toggle-live', livePaused ? 'Reconnect live' : 'Pause live')}${action('reload', 'Sync changes')}${action('order-scenes', 'Edit scene order')}${action('create-scene', '+ Add scene', '', '', 'primary')}</div></div><p class="field-note"><span data-applied-seq="${synchronizer?.lastSeq ?? 0}">Applied sequence ${synchronizer?.lastSeq ?? 0}</span>. Owner/editor access is required for changes. All controls remain available so you can test backend permissions.</p>${scenes.length ? `<div class="scene-list">${scenes.map((scene, index) => `<section class="scene-card" data-scene-id="${esc(scene.id)}"><header class="scene-heading"><div><p class="eyebrow">SCENE ${index + 1} · POSITION ${esc(scene.position)}</p><h3>${esc(scene.title)}</h3><p class="scene-description">${esc(scene.description || 'No description yet.')}</p></div><div class="board-actions">${action('view-scene', viewedScene === scene.id ? 'Viewing' : 'View scene', scene.id)}${orderButtons('scene', scene.id)}${action('edit-scene', 'Edit scene', scene.id)}${action('delete-scene', 'Delete scene', scene.id, '', 'danger-button')}</div></header><div class="section-heading"><h4>${scene.shots.length} ${scene.shots.length === 1 ? 'shot' : 'shots'}</h4><div class="heading-actions">${action('order-shots', 'Edit shot order', scene.id)}${action('create-shot', '+ Add shot', scene.id, '', 'primary')}</div></div>${scene.shots.length ? `<div class="shot-grid">${scene.shots.map((shot, index) => shotCard(shot, index, scene)).join('')}</div>` : '<p class="board-empty">No shots in this scene. Add a shot to get started.</p>'}</section>`).join('')}</div>` : '<div class="empty"><span class="empty-symbol">◈</span><h3>Your story starts with a scene.</h3><p>Use Add scene to create the first scene in this project.</p></div>'}`;
+    root().innerHTML = `<div id="board-presence"></div><div class="section-heading"><div><h2>Storyboard <span class="count">${scenes.length} scenes</span></h2><p>Plan your scenes, arrange your shots, and build your story.</p></div><div class="heading-actions">${synchronizer?.pending ? action('retry-write', 'Retry pending write') : ''}${action('toggle-history', historyOpen ? 'Hide history' : 'History')}${action('toggle-live', livePaused ? 'Reconnect live' : 'Pause live')}${action('reload', 'Sync changes')}${action('order-scenes', 'Edit scene order')}${action('create-scene', '+ Add scene', '', '', 'primary')}</div></div><p class="field-note"><span data-applied-seq="${synchronizer?.lastSeq ?? 0}">Applied sequence ${synchronizer?.lastSeq ?? 0}</span>. Owner/editor access is required for changes. All controls remain available so you can test backend permissions.</p>${scenes.length ? `<div class="scene-list">${scenes.map((scene, index) => `<section class="scene-card" data-scene-id="${esc(scene.id)}"><header class="scene-heading"><div><p class="eyebrow">SCENE ${index + 1} · POSITION ${esc(scene.position)}</p><h3>${esc(scene.title)}</h3><p class="scene-description">${esc(scene.description || 'No description yet.')}</p></div><div class="board-actions">${action('view-scene', viewedScene === scene.id ? 'Viewing' : 'View scene', scene.id)}${orderButtons('scene', scene.id)}${action('edit-scene', 'Edit scene', scene.id)}${action('delete-scene', 'Delete scene', scene.id, '', 'danger-button')}</div></header><div class="section-heading"><h4>${scene.shots.length} ${scene.shots.length === 1 ? 'shot' : 'shots'}</h4><div class="heading-actions">${action('order-shots', 'Edit shot order', scene.id)}${action('create-shot', '+ Add shot', scene.id, '', 'primary')}</div></div>${scene.shots.length ? `<div class="shot-grid">${scene.shots.map((shot, index) => shotCard(shot, index, scene)).join('')}</div>` : '<p class="board-empty">No shots in this scene. Add a shot to get started.</p>'}</section>`).join('')}</div>` : '<div class="empty"><span class="empty-symbol">◈</span><h3>Your story starts with a scene.</h3><p>Use Add scene to create the first scene in this project.</p></div>'}`;
+    if (historyOpen) {
+      root().insertAdjacentHTML('beforeend', historyPanel());
+      const form = root().querySelector('#history-form');
+      form.addEventListener('submit', (event) => { event.preventDefault(); previewHistory(form.elements.seq.value); });
+      form.elements.seq.addEventListener('input', (event) => { sequenceInput = event.target.value; });
+    }
     renderPresence();
     root().querySelectorAll('[data-board-action]').forEach((button) => { button.disabled = busy; });
   }
@@ -90,6 +103,47 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
       },
     });
   }
+  function historyPanel() {
+    const snapshots = historyData?.snapshots || [];
+    const operations = historyData?.operations || [];
+    return `<section class="panel history-panel" aria-label="Project history"><div class="section-heading"><div><h2>Project history</h2><p>${historyData ? `History loaded at sequence ${esc(historyData.current_seq)}. Showing up to 100 snapshots and recent operations.` : 'Browse snapshots and past versions.'}</p></div>${action('refresh-history', 'Refresh history')}</div>${historyError ? `<div class="error-message" role="alert">${esc(historyError)}</div>` : ''}${historyBusy ? '<p role="status">Loading history…</p>' : ''}<form id="history-form" novalidate><label for="history-seq">Sequence to preview</label><div class="heading-actions"><input id="history-seq" type="text" name="seq" inputmode="numeric" value="${esc(sequenceInput)}"><button class="secondary" type="submit" ${historyBusy ? 'disabled' : ''}>Preview version</button></div></form><div class="history-columns"><div><h3>Snapshots</h3><ul>${snapshots.map((item) => `<li>${action('preview-history', `Version ${esc(item.seq)}`, '', '', 'link-button').replace('data-board-action=', `data-seq="${esc(item.seq)}" data-board-action=`)} <span class="muted small">${esc(item.created_at)}</span></li>`).join('') || '<li>No snapshots yet. A baseline is saved with the first edit.</li>'}</ul></div><div><h3>Recent operations</h3><ul>${operations.map((item) => `<li>${action('preview-history', `Version ${esc(item.seq)}`, '', '', 'link-button').replace('data-board-action=', `data-seq="${esc(item.seq)}" data-board-action=`)} · ${esc(item.type)}</li>`).join('') || '<li>No operations yet.</li>'}</ul></div></div>${historical ? `<div class="history-preview" data-history-seq="${historical.last_seq}"><div class="section-heading"><h3>Preview: version ${historical.last_seq}</h3>${action('restore-history', 'Restore this version', '', '', 'primary')}</div><p class="field-note">This preview leaves the live board unchanged. Restore creates a new operation and keeps all later history.</p>${historical.scenes.map((scene) => `<article><h4>${esc(scene.title)}</h4><p>${esc(scene.description)}</p><ul>${scene.shots.map((shot) => `<li><strong>${esc(shot.prompt || 'Untitled shot')}</strong><p>${esc(shot.style)} ${esc(shot.notes)}</p>${imageURL(shot.image_url) ? `<img class="history-image" src="${esc(imageURL(shot.image_url))}" alt="Historical shot" loading="lazy" referrerpolicy="no-referrer">` : ''}</li>`).join('')}</ul></article>`).join('') || '<p>This version has no scenes.</p>'}</div>` : ''}</section>`;
+  }
+  async function loadHistory() {
+    if (historyBusy) return;
+    const current = synchronizer;
+    historyBusy = true; historyError = ''; render();
+    try {
+      const result = await api.request('history', { context: { projectID } });
+      if (current !== synchronizer) return;
+      historyData = result;
+    } catch (error) { if (current === synchronizer) historyError = error.message; }
+    finally { if (current === synchronizer) { historyBusy = false; render(); } }
+  }
+  async function previewHistory(seq) {
+    if (historyBusy) return;
+    const current = synchronizer;
+    const expected = current.lastSeq;
+    sequenceInput = seq; historical = null; historyBusy = true; historyError = ''; render();
+    try {
+      const result = await api.request('history-sequence', { context: { projectID, seq } });
+      if (current !== synchronizer) return;
+      if (result.project_id !== projectID || !Number.isSafeInteger(result.last_seq) || !Array.isArray(result.scenes)) throw new Error('Invalid historical board response.');
+      historical = result; historyBaseSeq = expected;
+    } catch (error) { if (current === synchronizer) { historical = null; historyError = error.message; } }
+    finally { if (current === synchronizer) { historyBusy = false; render(); } }
+  }
+  function restoreHistory() {
+    if (!historical) return;
+    const expectedProject = projectID;
+    const target = historical.last_seq;
+    const expected = historyBaseSeq;
+    const opID = crypto.randomUUID();
+    showForm(`Restore version ${target}?`, 'This creates a new version. Existing history stays available. If the live board changed after preview, refresh the preview before trying again.', '', 'Restore version', async () => {
+      await write('restore_board', { seq: target }, opID, expectedProject, { baseSeq: expected });
+      closeModal(); historical = null; toast('Historical board restored as a new version.');
+      await loadHistory();
+    });
+  }
   function showError(error) {
     if (!root()) return;
     const message = document.createElement('div'); message.className = 'error-message'; message.setAttribute('role', 'alert'); message.textContent = error.message;
@@ -117,11 +171,11 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
       showError(error);
     }
   }
-  function dispose() { livePaused = false; socket?.close(); socket = null; status = 'offline'; presence = []; viewedScene = ''; connectionError = ''; accessMessage = ''; handoffBoundary = null; memberLookup = []; synchronizer?.stop(); synchronizer = null; revision++; projectID = ''; scenes = []; busy = false; }
-  async function write(type, payload, opID, expectedProjectID) {
+  function dispose() { historyOpen = false; historyData = null; historical = null; historyBusy = false; historyError = ''; sequenceInput = ''; livePaused = false; socket?.close(); socket = null; status = 'offline'; presence = []; viewedScene = ''; connectionError = ''; accessMessage = ''; handoffBoundary = null; memberLookup = []; synchronizer?.stop(); synchronizer = null; revision++; projectID = ''; scenes = []; busy = false; }
+  async function write(type, payload, opID, expectedProjectID, options) {
     const current = synchronizer;
     if (!current || projectID !== expectedProjectID) throw new Error('Storyboard view changed.');
-    try { await current.submit(type, payload, opID); }
+    try { await current.submit(type, payload, opID, options); }
     finally { if (current === synchronizer && current.board && root()) { scenes = current.board.scenes; render(); } }
   }
   const checkbox = (name, label) => `<label class="patch-option"><input type="checkbox" name="include-${name}">Update ${label}</label>`;
@@ -204,6 +258,10 @@ export function createStoryboard({ api, escape: esc, showForm, closeModal, toast
     const shot = scene?.shots.find((item) => item.id === button.dataset.shot);
     if (scene) { viewedScene = scene.id; socket?.viewScene(scene.id); }
     if (name === 'view-scene') { render(); return; }
+    if (name === 'toggle-history') { historyOpen = !historyOpen; if (historyOpen) await loadHistory(); else render(); return; }
+    if (name === 'refresh-history') return loadHistory();
+    if (name === 'preview-history') return previewHistory(button.dataset.seq);
+    if (name === 'restore-history') return restoreHistory();
     if (name === 'toggle-live') {
       livePaused = !livePaused;
       if (livePaused) { socket?.close(); socket = null; status = 'offline'; presence = []; }

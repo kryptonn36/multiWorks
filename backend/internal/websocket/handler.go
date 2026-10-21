@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/kryptonn36/multiWorks/internal/db"
 	"net/http"
 	"net/url"
 	"os"
@@ -207,6 +208,11 @@ func (h *Handler) readPump(conn *websocket.Conn, client *Client) {
 			return
 		}
 
+		select {
+		case <-client.Done:
+			return
+		default:
+		}
 		h.Hub.Touch(client)
 
 		var msg ClientMessage
@@ -274,6 +280,10 @@ func (h *Handler) writePump(conn *websocket.Conn, client *Client) {
 			return false
 		}
 		if current != role {
+			if current == "viewer" {
+				h.Hub.RevokeUser(client.ProjectID, client.UserID)
+				return true
+			}
 			role = current
 			if err := conn.WriteJSON(ServerMessage{Type: "permissions", Role: role, Message: "Project role changed to " + role + ". Write permissions are checked by the backend."}); err != nil {
 				return false
@@ -287,6 +297,19 @@ func (h *Handler) writePump(conn *websocket.Conn, client *Client) {
 	for {
 		select {
 		case <-client.Done:
+			if client.Revoked.Load() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				current, err := h.Store.Role(ctx, client.ProjectID, client.UserID)
+				cancel()
+				_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err == nil {
+					_ = conn.WriteJSON(ServerMessage{Type: "permissions", Role: current, ReconnectRequired: true, Message: "Project permissions changed. Reconnecting with current access."})
+					_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseServiceRestart, "permissions changed"))
+				} else if errors.Is(err, sql.ErrNoRows) {
+					_ = conn.WriteJSON(ServerMessage{Type: "permissions", AccessRevoked: true, Message: "Project access was revoked."})
+					_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "project access revoked"))
+				}
+			}
 			return
 		case <-client.Permissions:
 			if !refresh() {
@@ -297,6 +320,11 @@ func (h *Handler) writePump(conn *websocket.Conn, client *Client) {
 				return
 			}
 		case msg := <-client.Send:
+			select {
+			case <-client.Done:
+				continue
+			default:
+			}
 			select {
 			case <-client.Permissions:
 				if !refresh() {
@@ -334,13 +362,7 @@ func (h *Handler) sceneBelongsToProject(projectID, sceneID uuid.UUID) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var exists bool
-	err := h.DB.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM scenes
-			WHERE id = $1 AND project_id = $2
-		)
-	`, sceneID, projectID).Scan(&exists)
+	exists, err := db.New(h.DB).SceneExists(ctx, db.SceneExistsParams{SceneID: sceneID, ProjectID: projectID})
 	return err == nil && exists
 }
 
@@ -423,15 +445,24 @@ func (h *Handler) enqueue(client *Client, message ServerMessage) {
 func (h *Handler) WorkspacePermissionsChanged(workspaceID, userID uuid.UUID) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	rows, err := h.DB.QueryContext(ctx, `SELECT id FROM projects WHERE workspace_id=$1`, workspaceID)
+	rows, err := db.New(h.DB).ListWorkspaceProjectIDs(ctx, workspaceID)
 	if err != nil {
 		return
 	} // The periodic check remains the fallback.
-	defer rows.Close()
-	for rows.Next() {
-		var projectID uuid.UUID
-		if rows.Scan(&projectID) == nil {
-			h.Hub.PermissionsChanged(projectID, userID)
-		}
+	for _, projectID := range rows {
+		h.MembershipChanged(projectID, userID)
 	}
+}
+
+// MembershipChanged is called after commit. Viewer downgrades terminate old
+// editor sessions; a fresh ticket may reconnect them with read-only access.
+func (h *Handler) MembershipChanged(projectID, userID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	role, err := h.Store.Role(ctx, projectID, userID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && role == "viewer") {
+		h.Hub.RevokeUser(projectID, userID)
+		return
+	}
+	h.Hub.PermissionsChanged(projectID, userID)
 }

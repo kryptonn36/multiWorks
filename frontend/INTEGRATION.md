@@ -143,3 +143,69 @@ editor-to-viewer downgrade via Manage access, backend rejection of both REST and
 socket writes, restoration to editor without reload, presence, and navigation
 cleanup. The normal frontend write path remains REST /ops. See README.md for the
 manual test steps, including the pause/reconnect controls.
+
+
+## Stage 7 history and restore
+
+Authenticated routes are GET `/api/projects/:projectID/history`, GET
+`/api/projects/:projectID/history/:seq`, and POST
+`/api/projects/:projectID/history/:seq/restore`. The restore request contains
+`client_id`, `op_id`, and the expected `base_seq`; it invokes the shared operation
+service with a `restore_board` intent. The server reconstructs and validates the
+board under the project lock, enriches the log payload with `{seq,board_state}`,
+replaces current rows, advances the sequence, appends the log, and saves a snapshot
+in one transaction. Clients cannot supply replacement board data. Duplicate restore
+keys return the existing operation across REST/socket transports.
+
+The frontend History panel renders metadata and detached scene/shot previews,
+keeps the prepared base sequence for conflict detection, and uses the existing
+pending-write journal for restore retries. The shared reducer handles restore
+operations in both live delivery and reconnect replay without resetting the
+contiguous cursor. Viewer controls remain visible and backend authorization
+returns the permission error.
+
+The backend uses one `Client.Close()`/sync.Once lifecycle and never closes Send.
+Project/workspace membership transactions lock the affected projects, commit,
+then notify the hub. Downgrades to viewer now invoke RevokeUser: old sockets close
+and reconnect with current viewer permissions. This supersedes the earlier
+behavior of keeping the original socket open after a downgrade. Full revocation
+stops reconnect; periodic permission checks remain the fallback.
+
+Snapshot migration backfills current checkpoints, captures baselines before first
+edits, and writes precise snapshots at every 100 operations and after restore.
+History reads use a consistent database transaction and replay through the requested
+sequence. A missing older baseline is accepted only when replay from an empty
+initial board reproduces the first known checkpoint; otherwise history returns
+409. Timestamps are normalized to UTC when verifying reconstructed checkpoints.
+
+
+Stage 7 verification against Docker/PostgreSQL and two Chrome sessions passed:
+historical scene/shot preview without live mutation; new-sequence restore and
+preserved later history; stale-preview 409; invalid/future sequence errors; forced
+old-editor socket closure with fresh viewer reconnect; viewer restore rejection;
+exact sequence-100 snapshot; restore replay after pausing live delivery; stable
+restore retry after an intentionally dropped committed response; and mobile layout
+with no uncaught browser errors. Database tests additionally cover concurrent
+restores, scope checks, legacy baseline preservation/unavailability, full membership
+revocation, periodic fallback, and immutable operation counts.
+
+
+## sqlc database access
+
+Runtime queries now live in backend/sql/queries: snapshots.sql (snapshot insert,
+lookup and metadata), history.sql (access and historical replay), board.sql (board
+load/restore), operations.sql (shared operation transaction), storyboard.sql
+(storyboard reads and disabled legacy handlers), realtime.sql (socket replay and
+tickets), and locks.sql (membership/project locks). Existing user and membership
+queries remain in users.sql and workspace_projects.sql. Generated methods are
+written to backend/internal/db; application code uses those typed methods and
+transaction-bound Queries instances instead of inline SQL or manual row scans.
+Nullable conversions preserve omitted-versus-empty updates. Integration test
+fixture SQL remains in tests. A boundary test prevents runtime driver query calls
+outside the generated database package.
+
+From backend, regenerate using `sqlc generate` or `make sqlc-generate`; validate
+with `sqlc vet` and `sqlc diff` (also `make sqlc-check`). Do not hand-edit generated
+*.sql.go files. The disabled legacy scene/shot update queries had mismatched
+position-only SQL and whole-field arguments; their named queries now match their
+existing request fields, and their routes remain disabled.

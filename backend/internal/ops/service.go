@@ -1,23 +1,56 @@
 package ops
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"github.com/kryptonn36/multiWorks/internal/db"
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/kryptonn36/multiWorks/internal/board"
 )
 
 // Service is the single transaction and publication pipeline for all transports.
 // Configure the publisher before serving requests.
 type Service struct {
-	database  *sql.DB
-	publisher func(uuid.UUID, Operation)
+	database      *sql.DB
+	restoreLoader func(context.Context, *sql.Tx, uuid.UUID, int64) (board.State, error)
+	publisher     func(uuid.UUID, Operation)
 }
 
 func NewService(database *sql.DB) *Service                           { return &Service{database: database} }
 func (s *Service) SetPublisher(publisher func(uuid.UUID, Operation)) { s.publisher = publisher }
+
+// SetRestoreLoader supplies server-side reconstruction; client board data is never trusted.
+func (s *Service) SetRestoreLoader(loader func(context.Context, *sql.Tx, uuid.UUID, int64) (board.State, error)) {
+	s.restoreLoader = loader
+}
+
+type restoreIntent struct {
+	Seq *int64 `json:"seq"`
+}
+
+func parseRestoreIntent(raw json.RawMessage) (restoreIntent, error) {
+	var intent restoreIntent
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	err := decoder.Decode(&intent)
+	if err != nil || intent.Seq == nil || *intent.Seq < 0 {
+		return intent, opError(400, "restore payload must contain only a non-negative seq")
+	}
+	return intent, nil
+}
+func matchingPayload(kind string, existing, incoming json.RawMessage) bool {
+	if kind != "restore_board" {
+		return jsonEqual(existing, incoming)
+	}
+	var stored restoreIntent
+	intent, err := parseRestoreIntent(incoming)
+	return err == nil && json.Unmarshal(existing, &stored) == nil && stored.Seq != nil && *stored.Seq == *intent.Seq
+}
 
 // ErrorStatus maps a service failure to the same status for REST and socket errors.
 func ErrorStatus(err error) int {
@@ -49,24 +82,10 @@ func (s *Service) Submit(ctx context.Context, projectID, userID uuid.UUID, req S
 		return SubmitResponse{}, opError(http.StatusInternalServerError, "could not start operation")
 	}
 	defer tx.Rollback()
+	queries := db.New(s.database).WithTx(tx)
 
 	// Lock this project row. All writers for this project serialize here.
-	var currentSeq int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT last_seq
-		FROM projects
-		WHERE id = $1
-		  AND EXISTS (
-		    SELECT 1
-		    FROM project_members pm
-		    JOIN workspace_members wm
-		      ON wm.user_id = pm.user_id
-		    WHERE pm.project_id = projects.id
-		      AND pm.user_id = $2
-		      AND wm.workspace_id = projects.workspace_id
-		  )
-		FOR UPDATE
-	`, projectID, userID).Scan(&currentSeq)
+	currentSeq, err := queries.LockProjectForOperation(ctx, db.LockProjectForOperationParams{ProjectID: projectID, UserID: userID})
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return SubmitResponse{}, opError(http.StatusNotFound, "project not found")
@@ -89,22 +108,15 @@ func (s *Service) Submit(ctx context.Context, projectID, userID uuid.UUID, req S
 	// Check deduplication before applying any mutation.
 	var existing Operation
 	var existingPayload []byte
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, project_id, seq, client_id, op_id, actor_id,
-		       op_type, payload, created_at
-		FROM project_ops
-		WHERE project_id = $1 AND client_id = $2 AND op_id = $3
-	`, projectID, req.ClientID, req.OpID).Scan(
-		&existing.ID, &existing.ProjectID, &existing.Seq,
-		&existing.ClientID, &existing.OpID, &existing.ActorID,
-		&existing.Type, &existingPayload, &existing.CreatedAt,
-	)
+	findOperationResult, err := queries.FindOperation(ctx, db.FindOperationParams{ProjectID: projectID, ClientID: req.ClientID, OpID: req.OpID})
+	existing = Operation{ID: findOperationResult.ID, ProjectID: findOperationResult.ProjectID, Seq: findOperationResult.Seq, ClientID: findOperationResult.ClientID, OpID: findOperationResult.OpID, ActorID: findOperationResult.ActorID, Type: findOperationResult.OpType, CreatedAt: findOperationResult.CreatedAt}
+	existingPayload = findOperationResult.Payload
 
 	if err == nil {
 		// Reusing an idempotency key for different content is a client bug.
 		if existing.ActorID != userID ||
 			existing.Type != req.Type ||
-			!jsonEqual(existingPayload, req.Payload) {
+			!matchingPayload(req.Type, existingPayload, req.Payload) {
 			return SubmitResponse{}, opError(http.StatusConflict, "idempotency key already used for another operation")
 		}
 
@@ -127,23 +139,53 @@ func (s *Service) Submit(ctx context.Context, projectID, userID uuid.UUID, req S
 		return SubmitResponse{}, opError(http.StatusConflict, "base_seq is ahead of the current project sequence")
 	}
 
-	// Apply the board mutation inside the same transaction as the log append.
-	if err := applyOperation(ctx, tx, projectID, userID, req.Type, p); err != nil {
-		var opErr *operationError
-		if errors.As(err, &opErr) {
-			return SubmitResponse{}, opError(opErr.status, opErr.message)
+	if req.Type == "restore_board" && req.BaseSeq != currentSeq {
+		return SubmitResponse{}, opError(409, "board changed since restore was prepared; refresh history and try again")
+	}
+	if err := board.EnsureBaseline(ctx, tx, projectID, userID, currentSeq); err != nil {
+		return SubmitResponse{}, opError(500, "could not preserve board baseline")
+	}
+	if req.Type == "restore_board" {
+		intent, err := parseRestoreIntent(req.Payload)
+		if err != nil {
+			return SubmitResponse{}, err
 		}
-		return SubmitResponse{}, opError(http.StatusInternalServerError, "could not apply operation")
+		if *intent.Seq > currentSeq {
+			return SubmitResponse{}, opError(400, "restore sequence is ahead of the project")
+		}
+		if s.restoreLoader == nil {
+			return SubmitResponse{}, opError(503, "history restore is not configured")
+		}
+		state, err := s.restoreLoader(ctx, tx, projectID, *intent.Seq)
+		if err != nil {
+			return SubmitResponse{}, opError(409, "historical board could not be reconstructed from its baseline")
+		}
+		if err := board.Validate(state, projectID); err != nil {
+			return SubmitResponse{}, opError(409, "historical board failed validation")
+		}
+		if err := board.Replace(ctx, tx, state); err != nil {
+			return SubmitResponse{}, opError(409, "restored items conflict with current data")
+		}
+		req.Payload, err = json.Marshal(struct {
+			Seq        int64       `json:"seq"`
+			BoardState board.State `json:"board_state"`
+		}{*intent.Seq, state})
+		if err != nil {
+			return SubmitResponse{}, opError(500, "could not encode restored board")
+		}
+	} else {
+		// Apply the board mutation inside the same transaction as the log append.
+		if err := applyOperation(ctx, tx, projectID, userID, req.Type, p); err != nil {
+			var opErr *operationError
+			if errors.As(err, &opErr) {
+				return SubmitResponse{}, opError(opErr.status, opErr.message)
+			}
+			return SubmitResponse{}, opError(http.StatusInternalServerError, "could not apply operation")
+		}
+
 	}
 
-	var nextSeq int64
-	err = tx.QueryRowContext(ctx, `
-		UPDATE projects
-		SET last_seq = last_seq + 1,
-		    updated_at = NOW()
-		WHERE id = $1
-		RETURNING last_seq
-	`, projectID).Scan(&nextSeq)
+	nextSeq, err := queries.AllocateProjectSequence(ctx, projectID)
 	if err != nil {
 		return SubmitResponse{}, opError(http.StatusInternalServerError, "could not allocate sequence")
 	}
@@ -159,17 +201,15 @@ func (s *Service) Submit(ctx context.Context, projectID, userID uuid.UUID, req S
 		Payload:   req.Payload,
 	}
 
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO project_ops (
-		    id, project_id, seq, client_id, op_id, actor_id, op_type, payload
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-		RETURNING created_at
-	`, op.ID, projectID, op.Seq, op.ClientID, op.OpID,
-		op.ActorID, op.Type, string(op.Payload),
-	).Scan(&op.CreatedAt)
+	appendOperationResult, err := queries.AppendOperation(ctx, db.AppendOperationParams{ID: op.ID, ProjectID: projectID, Seq: op.Seq, ClientID: op.ClientID, OpID: op.OpID, ActorID: op.ActorID, OpType: op.Type, Payload: op.Payload})
+	op.CreatedAt = appendOperationResult
 	if err != nil {
 		return SubmitResponse{}, opError(http.StatusInternalServerError, "could not append operation")
+	}
+	if nextSeq%100 == 0 || req.Type == "restore_board" {
+		if err := board.SaveSnapshot(ctx, tx, projectID, userID, nextSeq); err != nil {
+			return SubmitResponse{}, opError(500, "could not save project snapshot")
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

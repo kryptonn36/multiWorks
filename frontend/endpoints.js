@@ -15,13 +15,16 @@ export const endpoints = [
   { id: 'add-project-member', group: 'Projects', title: 'Add member', method: 'POST', path: '/api/projects/:projectID/members', fields: ['email', 'role'], roles: ['viewer', 'editor'], description: 'Add a project member by email. The backend resolves the user ID and checks project ownership and workspace membership.' },
   { id: 'ws-ticket', method: 'POST', path: '/api/projects/:projectID/ws-ticket' },
   { id: 'project-ws', method: 'GET', path: '/api/projects/:projectID/ws', transport: 'websocket' },
+  { id: 'history', method: 'GET', path: '/api/projects/:projectID/history' },
+  { id: 'history-sequence', method: 'GET', path: '/api/projects/:projectID/history/:seq' },
+  { id: 'restore-history', method: 'POST', path: '/api/projects/:projectID/history/:seq/restore' },
   { id: 'board', group: 'Storyboard', method: 'GET', path: '/api/projects/:projectID/board' },
   { id: 'submit-op', group: 'Storyboard', method: 'POST', path: '/api/projects/:projectID/ops' },
   { id: 'replay-ops', group: 'Storyboard', method: 'GET', path: '/api/projects/:projectID/ops' },
 ];
 
 export function requestPath(endpoint, context) {
-  return endpoint.path.replace(/:([A-Za-z]+ID)/g, (_, key) => {
+  return endpoint.path.replace(/:([A-Za-z]+)(?=\/|$)/g, (_, key) => {
     if (context[key] === undefined || context[key] === null) throw new Error(`Enter a ${key.replace('ID', '')} ID in Request context first.`);
     return encodeURIComponent(String(context[key]));
   });

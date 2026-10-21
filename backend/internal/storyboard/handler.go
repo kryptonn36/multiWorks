@@ -3,6 +3,7 @@ package storyboard
 import (
 	"database/sql"
 	"errors"
+	"github.com/kryptonn36/multiWorks/internal/db"
 	"net/http"
 	"strings"
 
@@ -98,25 +99,7 @@ func (h *Handler) projectRole(
 	c *gin.Context,
 	projectID, userID uuid.UUID,
 ) (string, error) {
-	var role string
-
-	err := h.database.QueryRowContext(
-		c.Request.Context(),
-		`
-		SELECT pm.role
-		FROM project_members pm
-		JOIN projects p ON p.id = pm.project_id
-		JOIN workspace_members wm
-		  ON wm.workspace_id = p.workspace_id
-		 AND wm.user_id = pm.user_id
-		WHERE p.id = $1
-		  AND pm.user_id = $2
-		`,
-		projectID,
-		userID,
-	).Scan(&role)
-
-	return role, err
+	return db.New(h.database).GetStoryboardRole(c.Request.Context(), db.GetStoryboardRoleParams{ProjectID: projectID, UserID: userID})
 }
 
 func (h *Handler) authorize(
@@ -160,174 +143,57 @@ func validPosition(value *int) bool {
 func (h *Handler) GetBoard(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
-		respondError(c, http.StatusUnauthorized, "authentication required")
+		respondError(c, 401, "authentication required")
 		return
 	}
-
 	projectID, ok := parseUUID(c.Param("projectID"))
 	if !ok {
-		respondError(c, http.StatusNotFound, "project not found")
+		respondError(c, 404, "project not found")
 		return
 	}
-
 	if !h.authorize(c, projectID, userID, false) {
 		return
 	}
-
-	// Keep the board and its sequence watermark in one read-only snapshot.
-	// Reading last_seq separately from the board could skip concurrent writes.
-	tx, err := h.database.BeginTx(c.Request.Context(), &sql.TxOptions{
-		Isolation: sql.LevelRepeatableRead,
-		ReadOnly:  true,
-	})
+	tx, err := h.database.BeginTx(c.Request.Context(), &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
-		respondError(c, http.StatusInternalServerError, "could not start board snapshot")
+		respondError(c, 500, "could not start board snapshot")
 		return
 	}
 	defer tx.Rollback()
-	var lastSeq int64
-	if err := tx.QueryRowContext(c.Request.Context(), "SELECT last_seq FROM projects WHERE id = $1", projectID).Scan(&lastSeq); err != nil {
-		respondError(c, http.StatusInternalServerError, "could not load board sequence")
-		return
-	}
-
-	rows, err := tx.QueryContext(
-		c.Request.Context(),
-		`
-		SELECT s.id, s.project_id, s.title, s.description, s.position,
-			s.created_by, s.created_at::text, s.updated_at::text
-		FROM scenes s
-		WHERE s.project_id = $1
-		AND EXISTS (
-			SELECT 1
-			FROM project_members pm
-			JOIN projects p ON p.id = pm.project_id
-			JOIN workspace_members wm
-			ON wm.workspace_id = p.workspace_id
-			AND wm.user_id = pm.user_id
-			WHERE pm.project_id = $1
-			AND pm.user_id = $2
-			AND wm.user_id = $2
-		)
-		ORDER BY s.position, s.created_at, s.id
-		`,
-		projectID, userID,
-	)
+	queries := db.New(h.database).WithTx(tx)
+	lastSeq, err := queries.GetBoardSequence(c.Request.Context(), projectID)
 	if err != nil {
-		respondError(c, http.StatusInternalServerError, "could not load scenes")
+		respondError(c, 500, "could not load board sequence")
 		return
 	}
-	defer rows.Close()
-
-	scenes := make([]Scene, 0)
-	sceneIndexes := make(map[uuid.UUID]int)
-
-	for rows.Next() {
-		var scene Scene
-		var createdAt, updatedAt sql.NullString
-
-		err := rows.Scan(
-			&scene.ID,
-			&scene.ProjectID,
-			&scene.Title,
-			&scene.Description,
-			&scene.Position,
-			&scene.CreatedBy,
-			&createdAt,
-			&updatedAt,
-		)
-		if err != nil {
-			respondError(c, http.StatusInternalServerError, "could not read scenes")
-			return
-		}
-
-		scene.CreatedAt = createdAt.String
-		scene.UpdatedAt = updatedAt.String
-		scene.Shots = make([]Shot, 0)
-		sceneIndexes[scene.ID] = len(scenes)
-		scenes = append(scenes, scene)
-	}
-	if err := rows.Err(); err != nil {
-		respondError(c, http.StatusInternalServerError, "could not read scenes")
-		return
-	}
-
-	shotRows, err := tx.QueryContext(
-		c.Request.Context(),
-		`
-		SELECT s.id, s.scene_id, s.prompt, s.style, s.notes,
-			s.image_url, s.position, s.created_by,
-			s.created_at::text, s.updated_at::text
-		FROM shots s
-		JOIN scenes sc ON sc.id = s.scene_id
-		WHERE sc.project_id = $1
-		AND EXISTS (
-			SELECT 1
-			FROM project_members pm
-			JOIN projects p ON p.id = pm.project_id
-			JOIN workspace_members wm
-			ON wm.workspace_id = p.workspace_id
-			AND wm.user_id = pm.user_id
-			WHERE pm.project_id = $1
-			AND pm.user_id = $2
-			AND wm.user_id = $2
-		)
-		ORDER BY s.scene_id, s.position, s.created_at, s.id
-		`,
-		projectID, userID,
-	)
+	sceneRows, err := queries.ListBoardScenes(c.Request.Context(), db.ListBoardScenesParams{ProjectID: projectID, UserID: userID})
 	if err != nil {
-		respondError(c, http.StatusInternalServerError, "could not load shots")
+		respondError(c, 500, "could not load scenes")
 		return
 	}
-	defer shotRows.Close()
-
-	for shotRows.Next() {
-		var shot Shot
-		var createdAt, updatedAt sql.NullString
-
-		err := shotRows.Scan(
-			&shot.ID,
-			&shot.SceneID,
-			&shot.Prompt,
-			&shot.Style,
-			&shot.Notes,
-			&shot.ImageURL,
-			&shot.Position,
-			&shot.CreatedBy,
-			&createdAt,
-			&updatedAt,
-		)
-		if err != nil {
-			respondError(c, http.StatusInternalServerError, "could not read shots")
-			return
-		}
-
-		shot.CreatedAt = createdAt.String
-		shot.UpdatedAt = updatedAt.String
-
-		if index, exists := sceneIndexes[shot.SceneID]; exists {
-			scenes[index].Shots = append(scenes[index].Shots, shot)
-		}
+	scenes := make([]Scene, 0, len(sceneRows))
+	indexes := make(map[uuid.UUID]int)
+	for _, row := range sceneRows {
+		indexes[row.ID] = len(scenes)
+		scenes = append(scenes, Scene{ID: row.ID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.SCreatedAt, UpdatedAt: row.SUpdatedAt, Shots: []Shot{}})
 	}
-	if err := shotRows.Err(); err != nil {
-		respondError(c, http.StatusInternalServerError, "could not read shots")
+	shotRows, err := queries.ListBoardShots(c.Request.Context(), db.ListBoardShotsParams{ProjectID: projectID, UserID: userID})
+	if err != nil {
+		respondError(c, 500, "could not load shots")
 		return
 	}
-
+	for _, row := range shotRows {
+		if index, ok := indexes[row.SceneID]; ok {
+			scenes[index].Shots = append(scenes[index].Shots, Shot{ID: row.ID, SceneID: row.SceneID, Prompt: row.Prompt, Style: row.Style, Notes: row.Notes, ImageURL: db.StringPointer(row.ImageUrl), Position: int(row.Position), CreatedBy: row.CreatedBy, CreatedAt: row.SCreatedAt, UpdatedAt: row.SUpdatedAt})
+		}
+	}
 	if err := tx.Commit(); err != nil {
-		respondError(c, http.StatusInternalServerError, "could not finish board snapshot")
+		respondError(c, 500, "could not finish board snapshot")
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"project_id": projectID,
-		"last_seq":   lastSeq,
-		"scenes":     scenes,
-	})
+	c.JSON(200, gin.H{"project_id": projectID, "last_seq": lastSeq, "scenes": scenes})
 }
 
-// POST /api/projects/:projectID/scenes
 func (h *Handler) CreateScene(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -356,36 +222,15 @@ func (h *Handler) CreateScene(c *gin.Context) {
 	id := uuid.New()
 
 	var scene Scene
-	err := h.database.QueryRowContext(
-		c.Request.Context(),
-		`
-		INSERT INTO scenes (
-		    id, project_id, title, description, position, created_by
-		)
-		SELECT $1, $2, $3, $4,
-		       COALESCE((SELECT MAX(position) + 1
-		                 FROM scenes WHERE project_id = $2), 0),
-		       $5
-		WHERE EXISTS (
-		    SELECT 1
-		    FROM project_members pm
-		    JOIN projects p ON p.id = pm.project_id
-		    JOIN workspace_members wm
-		      ON wm.workspace_id = p.workspace_id
-		     AND wm.user_id = pm.user_id
-		    WHERE pm.project_id = $2
-		      AND pm.user_id = $5
-		      AND pm.role IN ('owner', 'editor')
-		)
-		RETURNING id, project_id, title, description, position,
-		          created_by, created_at::text, updated_at::text
-		`,
-		id, projectID, strings.TrimSpace(req.Title),
-		req.Description, userID,
-	).Scan(
-		&scene.ID, &scene.ProjectID, &scene.Title, &scene.Description,
-		&scene.Position, &scene.CreatedBy, &scene.CreatedAt, &scene.UpdatedAt,
-	)
+	createStoryboardSceneResult, err := db.New(h.database).CreateStoryboardScene(c.Request.Context(), db.CreateStoryboardSceneParams{ID: id, ProjectID: projectID, Title: strings.TrimSpace(req.Title), Description: req.Description, UserID: userID})
+	scene.ID = createStoryboardSceneResult.ID
+	scene.ProjectID = createStoryboardSceneResult.ProjectID
+	scene.Title = createStoryboardSceneResult.Title
+	scene.Description = createStoryboardSceneResult.Description
+	scene.Position = int(createStoryboardSceneResult.Position)
+	scene.CreatedBy = createStoryboardSceneResult.CreatedBy
+	scene.CreatedAt = createStoryboardSceneResult.CreatedAt
+	scene.UpdatedAt = createStoryboardSceneResult.UpdatedAt
 
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, http.StatusNotFound, "project not found")
@@ -434,32 +279,15 @@ func (h *Handler) UpdateScene(c *gin.Context) {
 	}
 
 	var scene Scene
-	err := h.database.QueryRowContext(
-		c.Request.Context(),
-		`
-		UPDATE scenes s
-		SET position = $1, updated_at = NOW()
-		WHERE s.id = $2
-		AND s.project_id = $3
-		AND EXISTS (
-			SELECT 1
-			FROM project_members pm
-			JOIN projects p ON p.id = pm.project_id
-			JOIN workspace_members wm
-			ON wm.workspace_id = p.workspace_id
-			AND wm.user_id = pm.user_id
-			WHERE pm.project_id = $3
-			AND pm.user_id = $4
-			AND pm.role IN ('owner', 'editor')
-		)
-		RETURNING s.id, s.project_id, s.title, s.description, s.position,
-		          s.created_by, s.created_at::text, s.updated_at::text
-		`,
-		sceneID, projectID, req.Title, req.Description, req.Position, userID,
-	).Scan(
-		&scene.ID, &scene.ProjectID, &scene.Title, &scene.Description,
-		&scene.Position, &scene.CreatedBy, &scene.CreatedAt, &scene.UpdatedAt,
-	)
+	updateStoryboardSceneResult, err := db.New(h.database).UpdateStoryboardScene(c.Request.Context(), db.UpdateStoryboardSceneParams{Title: db.NullableString(req.Title), Description: db.NullableString(req.Description), Position: db.NullablePosition(req.Position), SceneID: sceneID, ProjectID: projectID, UserID: userID})
+	scene.ID = updateStoryboardSceneResult.ID
+	scene.ProjectID = updateStoryboardSceneResult.ProjectID
+	scene.Title = updateStoryboardSceneResult.Title
+	scene.Description = updateStoryboardSceneResult.Description
+	scene.Position = int(updateStoryboardSceneResult.Position)
+	scene.CreatedBy = updateStoryboardSceneResult.CreatedBy
+	scene.CreatedAt = updateStoryboardSceneResult.SCreatedAt
+	scene.UpdatedAt = updateStoryboardSceneResult.SUpdatedAt
 
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, http.StatusNotFound, "scene not found")
@@ -497,29 +325,13 @@ func (h *Handler) DeleteScene(c *gin.Context) {
 		return
 	}
 
-	result, err := h.database.ExecContext(
-		c.Request.Context(),
-		`
-		DELETE FROM scenes s
-		WHERE s.id = $1 AND s.project_id = $2
-		  AND EXISTS (
-		    SELECT 1 FROM project_members pm
-		    JOIN projects p ON p.id = pm.project_id
-		    JOIN workspace_members wm
-		      ON wm.workspace_id = p.workspace_id
-		     AND wm.user_id = pm.user_id
-		    WHERE pm.project_id = $2 AND pm.user_id = $3
-		      AND pm.role IN ('owner', 'editor')
-		  )
-		`,
-		sceneID, projectID, userID,
-	)
+	result, err := db.New(h.database).DeleteStoryboardScene(c.Request.Context(), db.DeleteStoryboardSceneParams{SceneID: sceneID, ProjectID: projectID, UserID: userID})
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "could not delete scene")
 		return
 	}
 
-	count, err := result.RowsAffected()
+	count := result
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "could not confirm scene deletion")
 		return
@@ -566,37 +378,17 @@ func (h *Handler) CreateShot(c *gin.Context) {
 
 	id := uuid.New()
 	var shot Shot
-	err := h.database.QueryRowContext(
-		c.Request.Context(),
-		`
-		INSERT INTO shots (
-		    id, scene_id, prompt, style, notes, image_url, position, created_by
-		)
-		SELECT $1, sc.id, $3, $4, $5, $6,
-		       COALESCE((SELECT MAX(position) + 1
-		                 FROM shots WHERE scene_id = sc.id), 0),
-		       $7
-		FROM scenes sc
-		WHERE sc.id = $2 AND sc.project_id = $8
-		  AND EXISTS (
-		    SELECT 1 FROM project_members pm
-		    JOIN projects p ON p.id = pm.project_id
-		    JOIN workspace_members wm
-		      ON wm.workspace_id = p.workspace_id
-		     AND wm.user_id = pm.user_id
-		    WHERE pm.project_id = $8 AND pm.user_id = $7
-		      AND pm.role IN ('owner', 'editor')
-		  )
-		RETURNING id, scene_id, prompt, style, notes, image_url, position,
-		          created_by, created_at::text, updated_at::text
-		`,
-		id, sceneID, req.Prompt, req.Style, req.Notes, req.ImageURL,
-		userID, projectID,
-	).Scan(
-		&shot.ID, &shot.SceneID, &shot.Prompt, &shot.Style, &shot.Notes,
-		&shot.ImageURL, &shot.Position, &shot.CreatedBy,
-		&shot.CreatedAt, &shot.UpdatedAt,
-	)
+	createStoryboardShotResult, err := db.New(h.database).CreateStoryboardShot(c.Request.Context(), db.CreateStoryboardShotParams{ID: id, Prompt: req.Prompt, Style: req.Style, Notes: req.Notes, ImageUrl: db.NullableString(req.ImageURL), UserID: userID, SceneID: sceneID, ProjectID: projectID})
+	shot.ID = createStoryboardShotResult.ID
+	shot.SceneID = createStoryboardShotResult.SceneID
+	shot.Prompt = createStoryboardShotResult.Prompt
+	shot.Style = createStoryboardShotResult.Style
+	shot.Notes = createStoryboardShotResult.Notes
+	shot.ImageURL = db.StringPointer(createStoryboardShotResult.ImageUrl)
+	shot.Position = int(createStoryboardShotResult.Position)
+	shot.CreatedBy = createStoryboardShotResult.CreatedBy
+	shot.CreatedAt = createStoryboardShotResult.CreatedAt
+	shot.UpdatedAt = createStoryboardShotResult.UpdatedAt
 
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, http.StatusNotFound, "scene not found")
@@ -651,38 +443,17 @@ func (h *Handler) UpdateShot(c *gin.Context) {
 	}
 
 	var shot Shot
-	err := h.database.QueryRowContext(
-		c.Request.Context(),
-		`
-		UPDATE shots s
-		SET position = $1, updated_at = NOW()
-		FROM scenes sc
-		WHERE s.id = $2
-		AND s.scene_id = $3
-		AND sc.id = s.scene_id
-		AND sc.project_id = $4
-		AND EXISTS (
-			SELECT 1
-			FROM project_members pm
-			JOIN projects p ON p.id = pm.project_id
-			JOIN workspace_members wm
-			ON wm.workspace_id = p.workspace_id
-			AND wm.user_id = pm.user_id
-			WHERE pm.project_id = $4
-			AND pm.user_id = $5
-			AND pm.role IN ('owner', 'editor')
-		)
-		RETURNING s.id, s.scene_id, s.prompt, s.style, s.notes,
-		          s.image_url, s.position, s.created_by,
-		          s.created_at::text, s.updated_at::text
-		`,
-		shotID, sceneID, projectID, req.Prompt, req.Style, req.Notes,
-		req.ImageURL, req.Position, userID,
-	).Scan(
-		&shot.ID, &shot.SceneID, &shot.Prompt, &shot.Style, &shot.Notes,
-		&shot.ImageURL, &shot.Position, &shot.CreatedBy,
-		&shot.CreatedAt, &shot.UpdatedAt,
-	)
+	updateStoryboardShotResult, err := db.New(h.database).UpdateStoryboardShot(c.Request.Context(), db.UpdateStoryboardShotParams{Prompt: db.NullableString(req.Prompt), Style: db.NullableString(req.Style), Notes: db.NullableString(req.Notes), ImageUrl: db.NullableString(req.ImageURL), Position: db.NullablePosition(req.Position), ShotID: shotID, SceneID: sceneID, ProjectID: projectID, UserID: userID})
+	shot.ID = updateStoryboardShotResult.ID
+	shot.SceneID = updateStoryboardShotResult.SceneID
+	shot.Prompt = updateStoryboardShotResult.Prompt
+	shot.Style = updateStoryboardShotResult.Style
+	shot.Notes = updateStoryboardShotResult.Notes
+	shot.ImageURL = db.StringPointer(updateStoryboardShotResult.ImageUrl)
+	shot.Position = int(updateStoryboardShotResult.Position)
+	shot.CreatedBy = updateStoryboardShotResult.CreatedBy
+	shot.CreatedAt = updateStoryboardShotResult.SCreatedAt
+	shot.UpdatedAt = updateStoryboardShotResult.SUpdatedAt
 
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(c, http.StatusNotFound, "shot not found")
@@ -724,31 +495,13 @@ func (h *Handler) DeleteShot(c *gin.Context) {
 		return
 	}
 
-	result, err := h.database.ExecContext(
-		c.Request.Context(),
-		`
-		DELETE FROM shots s
-		USING scenes sc
-		WHERE s.id = $1 AND s.scene_id = $2
-		  AND sc.id = s.scene_id AND sc.project_id = $3
-		  AND EXISTS (
-		    SELECT 1 FROM project_members pm
-		    JOIN projects p ON p.id = pm.project_id
-		    JOIN workspace_members wm
-		      ON wm.workspace_id = p.workspace_id
-		     AND wm.user_id = pm.user_id
-		    WHERE pm.project_id = $3 AND pm.user_id = $4
-		      AND pm.role IN ('owner', 'editor')
-		  )
-		`,
-		shotID, sceneID, projectID, userID,
-	)
+	result, err := db.New(h.database).DeleteStoryboardShot(c.Request.Context(), db.DeleteStoryboardShotParams{ShotID: shotID, SceneID: sceneID, ProjectID: projectID, UserID: userID})
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "could not delete shot")
 		return
 	}
 
-	count, err := result.RowsAffected()
+	count := result
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "could not confirm shot deletion")
 		return
@@ -799,28 +552,20 @@ func (h *Handler) ReorderScenes(c *gin.Context) {
 	defer tx.Rollback()
 
 	var count int
-	err = tx.QueryRowContext(
-		c.Request.Context(),
-		`SELECT COUNT(*) FROM scenes WHERE project_id = $1`,
-		projectID,
-	).Scan(&count)
+	countProjectScenesResult, err := db.New(tx).CountProjectScenes(c.Request.Context(), projectID)
+	count = int(countProjectScenesResult)
 	if err != nil || count != len(ids) {
 		respondError(c, http.StatusBadRequest, "provide every scene in this project exactly once")
 		return
 	}
 
 	for position, id := range ids {
-		result, err := tx.ExecContext(
-			c.Request.Context(),
-			`UPDATE scenes SET position = $1, updated_at = NOW()
-			 WHERE id = $2 AND project_id = $3`,
-			position, id, projectID,
-		)
+		result, err := db.New(tx).ReorderStoryboardScene(c.Request.Context(), db.ReorderStoryboardSceneParams{Position: int64(position), ID: id, ProjectID: projectID})
 		if err != nil {
 			respondError(c, http.StatusInternalServerError, "could not reorder scenes")
 			return
 		}
-		changed, err := result.RowsAffected()
+		changed := result
 		if err != nil || changed != 1 {
 			respondError(c, http.StatusBadRequest, "scene does not belong to this project")
 			return
@@ -878,30 +623,20 @@ func (h *Handler) ReorderShots(c *gin.Context) {
 	defer tx.Rollback()
 
 	var count int
-	err = tx.QueryRowContext(
-		c.Request.Context(),
-		`SELECT COUNT(*) FROM shots WHERE scene_id = $1`,
-		sceneID,
-	).Scan(&count)
+	countSceneShotsResult, err := db.New(tx).CountSceneShots(c.Request.Context(), sceneID)
+	count = int(countSceneShotsResult)
 	if err != nil || count != len(ids) {
 		respondError(c, http.StatusBadRequest, "provide every shot in this scene exactly once")
 		return
 	}
 
 	for position, id := range ids {
-		result, err := tx.ExecContext(
-			c.Request.Context(),
-			`UPDATE shots s SET position = $1, updated_at = NOW()
-			 FROM scenes sc
-			 WHERE s.id = $2 AND s.scene_id = $3
-			   AND sc.id = s.scene_id AND sc.project_id = $4`,
-			position, id, sceneID, projectID,
-		)
+		result, err := db.New(tx).ReorderStoryboardShot(c.Request.Context(), db.ReorderStoryboardShotParams{Position: int64(position), ID: id, SceneID: sceneID, ProjectID: projectID})
 		if err != nil {
 			respondError(c, http.StatusInternalServerError, "could not reorder shots")
 			return
 		}
-		changed, err := result.RowsAffected()
+		changed := result
 		if err != nil || changed != 1 {
 			respondError(c, http.StatusBadRequest, "shot does not belong to this scene")
 			return

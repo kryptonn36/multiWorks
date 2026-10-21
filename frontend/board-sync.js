@@ -36,6 +36,11 @@ export function applyBoardOperation(board, operation) {
   };
   const metadata = { created_by: operation.actor_id, created_at: operation.created_at, updated_at: operation.created_at };
   switch (operation.type) {
+    case 'restore_board': {
+      const restored = p.board_state;
+      if (!restored || restored.project_id !== operation.project_id || !Array.isArray(restored.scenes) || restored.scenes.some((scene) => !Array.isArray(scene.shots))) throw new Error('Invalid restored board in operation.');
+      return { ...structuredClone(restored), last_seq: operation.seq };
+    }
     case 'scene.create':
       if (!p.scene_id || typeof p.title !== 'string' || next.scenes.some((s) => s.id === p.scene_id)) throw new Error('Cannot apply scene creation.');
       next.scenes.push({ id: p.scene_id, project_id: operation.project_id, title: p.title.trim(), description: p.description ?? '', position: Math.max(-1, ...next.scenes.map((s) => s.position)) + 1, shots: [], ...metadata });
@@ -141,7 +146,10 @@ export function createBoardSync({ api, projectID, clientID, storage, userID = ''
     active();
     if (!pending) return;
     if (pending.acceptedSeq === undefined) {
-      const response = await api.request('submit-op', { context: { projectID }, body: pending.request });
+      const request = pending.request;
+      const response = request.type === 'restore_board'
+        ? await api.request('restore-history', { context: { projectID, seq: request.payload.seq }, body: { client_id: request.client_id, op_id: request.op_id, base_seq: request.base_seq } })
+        : await api.request('submit-op', { context: { projectID }, body: request });
       active();
       if (response.operation?.project_id !== projectID || response.operation.client_id !== pending.request.client_id || response.operation.op_id !== pending.request.op_id) throw new Error('Unexpected operation acknowledgement.');
       pending.acceptedSeq = sequence(response.operation.seq); persist();
@@ -151,13 +159,13 @@ export function createBoardSync({ api, projectID, clientID, storage, userID = ''
     if (lastSeq < pending.acceptedSeq) throw new Error('Write was saved but has not been replayed yet. Retry synchronization.');
     pending = null; persist();
   }
-  async function submit(type, payload, opID = crypto.randomUUID()) {
+  async function submit(type, payload, opID = crypto.randomUUID(), { baseSeq = lastSeq } = {}) {
     active();
     if (!board) throw new Error('Load the storyboard before submitting changes.');
     if (writing) throw new Error('A storyboard write is already in progress.');
     if (pending && (pending.request.op_id !== opID || pending.request.type !== type || JSON.stringify(pending.request.payload) !== JSON.stringify(payload))) throw new Error('A previous write needs confirmation. Close this form and use Retry pending write before making another change.');
     if (!pending) {
-      pending = { request: { client_id: clientID, op_id: opID, base_seq: lastSeq, type, payload: structuredClone(payload) } }; persist();
+      pending = { request: { client_id: clientID, op_id: opID, base_seq: baseSeq, type, payload: structuredClone(payload) } }; persist();
     }
     writing = true;
     try { await finishPending(); }

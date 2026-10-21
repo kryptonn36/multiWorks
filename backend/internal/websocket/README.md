@@ -82,7 +82,7 @@ Workspace callbacks notify sockets for projects in that workspace. The periodic
 five-second check remains a fallback for external SQL changes or missed signals.
 
 A role change produces a `permissions` message with `role` and `message`. Viewer
-downgrades retain read access; both operation transports immediately consult the
+downgrades close old sockets and reconnect with current read access; both operation transports immediately consult the
 authoritative role when processing each new write. Missing membership sends
 `access_revoked: true` and closes with code 1008. A temporary permission-query
 failure closes with retryable code 1013 rather than declaring revocation. The
@@ -95,3 +95,23 @@ The hub is local to one API process; multiple replicas require shared publicatio
 Database-backed transport tests verify role downgrade/upgrade via the real
 membership handler, full-removal signals, and periodic fallback. Hub tests force
 replay/live overlap and out-of-order publication deterministically.
+
+
+## Coordinated revocation and restore
+
+`Client.Close()` owns Done closure through sync.Once. Register, Unregister,
+Broadcast slow-client eviction, and RevokeUser share that lifecycle; producers
+never close Send. RevokeUser removes every target socket under the hub mutex,
+releases the lock, signals shutdown, and broadcasts updated presence. Only the
+writer emits permission/close frames. A viewer downgrade sends a permission update
+with `reconnect_required: true` and closes with 1012; the frontend obtains a new
+ticket and reconnects with viewer access. Removed membership sends
+`access_revoked: true` and closes with 1008. The operation transaction always checks
+the current role, including during in-flight role changes serialized on project locks.
+
+`restore_board` submissions carry only `payload: {seq: HISTORICAL_SEQ}` plus the
+usual envelope. The expected base_seq must exactly match the current project
+sequence. The shared service reconstructs the historical board server-side under
+the lock and logs `{seq,board_state}` at the next sequence. The same operation is
+broadcast and replayed like ordinary edits. Do not submit board_state yourself.
+The history REST restore endpoint is a convenience adapter to this pipeline.

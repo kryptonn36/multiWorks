@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"github.com/kryptonn36/multiWorks/internal/db"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -51,11 +52,11 @@ func (h *Handler) IssueTicket(c *gin.Context) {
 		return
 	}
 	ticket := base64.RawURLEncoding.EncodeToString(secret[:])
-	if _, err = h.DB.ExecContext(ctx, `DELETE FROM websocket_tickets WHERE expires_at <= NOW()`); err != nil {
+	if _, err = db.New(h.DB).DeleteExpiredSocketTickets(ctx); err != nil {
 		c.JSON(500, gin.H{"error": "could not create ticket"})
 		return
 	}
-	_, err = h.DB.ExecContext(ctx, `INSERT INTO websocket_tickets (ticket_hash, project_id, user_id, expires_at) VALUES ($1,$2,$3,NOW() + INTERVAL '30 seconds')`, ticketHash(ticket), projectID, userID)
+	_, err = db.New(h.DB).CreateSocketTicket(ctx, db.CreateSocketTicketParams{TicketHash: ticketHash(ticket), ProjectID: projectID, UserID: userID})
 	if err != nil {
 		c.JSON(500, gin.H{"error": "could not create ticket"})
 		return
@@ -70,6 +71,7 @@ func (h *Handler) consumeTicket(parent context.Context, projectID uuid.UUID, tic
 	}
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
-	err := h.DB.QueryRowContext(ctx, `DELETE FROM websocket_tickets WHERE ticket_hash=$1 AND project_id=$2 AND expires_at>NOW() RETURNING user_id`, ticketHash(ticket), projectID).Scan(&userID)
+	consumeSocketTicketResult, err := db.New(h.DB).ConsumeSocketTicket(ctx, db.ConsumeSocketTicketParams{TicketHash: ticketHash(ticket), ProjectID: projectID})
+	userID = consumeSocketTicketResult
 	return userID, err
 }

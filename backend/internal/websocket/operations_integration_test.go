@@ -81,7 +81,7 @@ func TestOperationTransports(t *testing.T) {
 	socketHandler := NewHandler(database, hub, service)
 	rest := ops.NewHandlerWithService(service)
 	projectHandler := project.NewHandler(database)
-	projectHandler.SetMembershipPublisher(hub.PermissionsChanged)
+	projectHandler.SetMembershipPublisher(socketHandler.MembershipChanged)
 	workspaceHandler := workspace.NewHandler(database)
 	workspaceHandler.SetMembershipPublisher(socketHandler.WorkspacePermissionsChanged)
 	gin.SetMode(gin.TestMode)
@@ -145,6 +145,9 @@ func TestOperationTransports(t *testing.T) {
 			var message ServerMessage
 			if err := conn.ReadJSON(&message); err != nil {
 				t.Fatal(err)
+			}
+			if message.Type == "replay" && string(message.Operations) == "null" {
+				t.Fatal("empty replay must be an array")
 			}
 			if message.Type == "replay_complete" {
 				break
@@ -250,6 +253,13 @@ func TestOperationTransports(t *testing.T) {
 	if changed.Role != "viewer" || time.Since(started) >= 2*time.Second {
 		t.Fatalf("downgrade notification was not prompt: %+v", changed)
 	}
+	if !changed.ReconnectRequired {
+		t.Fatal("downgrade did not request a fresh connection")
+	}
+	if _, _, err := editorSocket.ReadMessage(); !gorilla.IsCloseError(err, gorilla.CloseServiceRestart) {
+		t.Fatalf("downgraded socket was not closed: %v", err)
+	}
+	editorSocket = connect(editor)
 	deniedEditor := update
 	deniedEditor.OpID = "downgraded-editor"
 	if failure := submit(editorSocket, deniedEditor, "error"); failure.Status != 403 {
@@ -271,7 +281,7 @@ func TestOperationTransports(t *testing.T) {
 	}
 	// Simulate a committed membership removal and its post-commit hook.
 	exec(`DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, projectID, editor)
-	hub.PermissionsChanged(projectID, editor)
+	hub.RevokeUser(projectID, editor)
 	if changed := read(editorSocket, "permissions"); !changed.AccessRevoked {
 		t.Fatal("full access revocation was not sent")
 	}

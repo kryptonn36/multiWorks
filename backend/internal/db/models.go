@@ -6,6 +6,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,27 @@ type ProjectMember struct {
 	UserID    uuid.UUID
 	Role      string
 	CreatedAt time.Time
+}
+
+type ProjectOp struct {
+	ID        uuid.UUID
+	ProjectID uuid.UUID
+	Seq       int64
+	ClientID  string
+	OpID      string
+	ActorID   uuid.UUID
+	OpType    string
+	Payload   json.RawMessage
+	CreatedAt time.Time
+}
+
+type ProjectSnapshot struct {
+	ID         uuid.UUID
+	ProjectID  uuid.UUID
+	Seq        int64
+	BoardState json.RawMessage
+	CreatedBy  uuid.NullUUID
+	CreatedAt  time.Time
 }
 
 type Scene struct {
@@ -57,6 +79,13 @@ type User struct {
 	Email        string
 	PasswordHash string
 	CreatedAt    time.Time
+}
+
+type WebsocketTicket struct {
+	TicketHash string
+	ProjectID  uuid.UUID
+	UserID     uuid.UUID
+	ExpiresAt  time.Time
 }
 
 type Workspace struct {

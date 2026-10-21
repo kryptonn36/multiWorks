@@ -7,3 +7,10 @@ migrate-up:
 
 migrate-down:
 	goose -dir sql/migrations postgres $(DB_URL) down
+# Regenerate typed methods from sql/queries and sql/migrations.
+sqlc-generate:
+	sqlc generate
+
+sqlc-check:
+	sqlc vet
+	sqlc diff

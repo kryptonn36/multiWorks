@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,10 +14,13 @@ const (
 )
 
 type Client struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	ProjectID uuid.UUID
-	Role      string
+	initialize sync.Once
+	shutdown   sync.Once
+	Revoked    atomic.Bool
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	ProjectID  uuid.UUID
+	Role       string
 
 	Send          chan ServerMessage
 	Done          chan struct{}
@@ -44,11 +48,18 @@ func (h *Hub) Register(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	c.initialize.Do(func() {
+		if c.Done == nil {
+			c.Done = make(chan struct{})
+		}
+	})
+	select {
+	case <-c.Done:
+		return
+	default:
+	}
 	if h.clients[c.ProjectID] == nil {
 		h.clients[c.ProjectID] = make(map[*Client]struct{})
-	}
-	if c.Done == nil {
-		c.Done = make(chan struct{})
 	}
 	if c.Permissions == nil {
 		c.Permissions = make(chan struct{}, 1)
@@ -71,7 +82,7 @@ func (h *Hub) Unregister(c *Client) {
 
 	if _, exists := projectClients[c]; exists {
 		delete(projectClients, c)
-		close(c.Done)
+		c.Close()
 	}
 	if len(projectClients) == 0 {
 		delete(h.clients, c.ProjectID)
@@ -209,7 +220,7 @@ func (h *Hub) queueLocked(c *Client, message ServerMessage) bool {
 func (h *Hub) removeLocked(c *Client) {
 	if _, ok := h.clients[c.ProjectID][c]; ok {
 		delete(h.clients[c.ProjectID], c)
-		close(c.Done)
+		c.Close()
 	}
 }
 
@@ -242,4 +253,35 @@ func (h *Hub) PermissionsChanged(projectID, userID uuid.UUID) {
 			}
 		}
 	}
+}
+
+// Close is the only owner of Done. Send is never closed by producers.
+func (c *Client) Close() {
+	c.initialize.Do(func() {
+		if c.Done == nil {
+			c.Done = make(chan struct{})
+		}
+	})
+	c.shutdown.Do(func() { close(c.Done) })
+}
+
+// RevokeUser removes all of a user's project sockets, then signals shutdown.
+func (h *Hub) RevokeUser(projectID, userID uuid.UUID) {
+	h.mu.Lock()
+	var revoked []*Client
+	for c := range h.clients[projectID] {
+		if c.UserID == userID {
+			delete(h.clients[projectID], c)
+			revoked = append(revoked, c)
+		}
+	}
+	if len(h.clients[projectID]) == 0 {
+		delete(h.clients, projectID)
+	}
+	h.mu.Unlock()
+	for _, c := range revoked {
+		c.Revoked.Store(true)
+		c.Close()
+	}
+	h.Broadcast(projectID, ServerMessage{Type: "presence", Users: h.Presence(projectID)})
 }

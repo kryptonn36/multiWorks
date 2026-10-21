@@ -329,7 +329,23 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 
-	actorRole, err := h.queries.GetProjectRole(
+	tx, err := h.database.BeginTx(c.Request.Context(), nil)
+	if err != nil {
+		respondError(c, 500, "could not start membership change")
+		return
+	}
+	defer tx.Rollback()
+	_, lockProjectErr := h.queries.WithTx(tx).LockProject(c.Request.Context(), projectID)
+	if err := lockProjectErr; err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(c, 404, "project not found")
+		} else {
+			respondError(c, 500, "could not lock membership change")
+		}
+		return
+	}
+	queries := h.queries.WithTx(tx)
+	actorRole, err := queries.GetProjectRole(
 		c.Request.Context(),
 		db.GetProjectRoleParams{
 			ProjectID: projectID,
@@ -351,7 +367,7 @@ func (h *Handler) AddMember(c *gin.Context) {
 
 	// Reuse the case-insensitive email lookup used by workspace membership.
 	// Membership records continue to reference the user's internal UUID.
-	target, err := h.queries.GetUserByEmailForWorkspace(
+	target, err := queries.GetUserByEmailForWorkspace(
 		c.Request.Context(),
 		strings.TrimSpace(req.Email),
 	)
@@ -364,7 +380,7 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 
-	_, err = h.queries.AddProjectMember(
+	_, err = queries.AddProjectMember(
 		c.Request.Context(),
 		db.AddProjectMemberParams{
 			ProjectID: projectID,
@@ -382,7 +398,11 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 
-	// The successful standalone SQL statement has committed before notification.
+	if err := tx.Commit(); err != nil {
+		respondError(c, 500, "could not commit membership change")
+		return
+	}
+	// Publish only after the membership transaction commits.
 	if h.membershipPublisher != nil {
 		h.membershipPublisher(projectID, target.ID)
 	}

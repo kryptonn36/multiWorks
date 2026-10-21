@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/kryptonn36/multiWorks/internal/db"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -22,17 +23,7 @@ func (s *Store) Role(
 	ctx context.Context,
 	projectID, userID uuid.UUID,
 ) (string, error) {
-	var role string
-	err := s.DB.QueryRowContext(ctx, `
-		SELECT pm.role
-		FROM project_members pm
-		JOIN projects p ON p.id = pm.project_id
-		JOIN workspace_members wm
-		  ON wm.workspace_id = p.workspace_id
-		 AND wm.user_id = pm.user_id
-		WHERE pm.project_id = $1 AND pm.user_id = $2
-	`, projectID, userID).Scan(&role)
-	return role, err
+	return db.New(s.DB).GetSocketRole(ctx, db.GetSocketRoleParams{ProjectID: projectID, UserID: userID})
 }
 
 func (s *Store) Replay(
@@ -49,53 +40,18 @@ func (s *Store) ReplayThrough(ctx context.Context, projectID, userID uuid.UUID, 
 }
 
 func (s *Store) replay(ctx context.Context, projectID, userID uuid.UUID, afterSeq int64, limit int, boundary *int64) ([]json.RawMessage, int64, bool, error) {
-	var currentSeq int64
-
-	err := s.DB.QueryRowContext(ctx, `
-		SELECT p.last_seq
-		FROM projects p
-		JOIN project_members pm ON pm.project_id = p.id
-		JOIN workspace_members wm
-		  ON wm.workspace_id = p.workspace_id
-		 AND wm.user_id = pm.user_id
-		WHERE p.id = $1 AND pm.user_id = $2
-	`, projectID, userID).Scan(&currentSeq)
+	currentSeq, err := db.New(s.DB).GetSocketSequence(ctx, db.GetSocketSequenceParams{ProjectID: projectID, UserID: userID})
 	if err != nil {
 		return nil, 0, false, err
 	}
 
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT jsonb_build_object(
-			'id', id,
-			'project_id', project_id,
-			'seq', seq,
-			'client_id', client_id,
-			'op_id', op_id,
-			'actor_id', actor_id,
-			'type', op_type,
-			'payload', payload,
-			'created_at', created_at
-		)
-		FROM project_ops
-		WHERE project_id = $1 AND seq > $2 AND ($4::bigint IS NULL OR seq <= $4)
-		ORDER BY seq ASC
-		LIMIT $3
-	`, projectID, afterSeq, limit+1, boundary)
+	rows, err := db.New(s.DB).ListSocketReplay(ctx, db.ListSocketReplayParams{ProjectID: projectID, AfterSeq: afterSeq, BoundarySeq: db.NullableInt64(boundary), RowLimit: int32(limit + 1)})
 	if err != nil {
 		return nil, 0, false, err
 	}
-	defer rows.Close()
-
-	operations := make([]json.RawMessage, 0, limit)
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, 0, false, err
-		}
-		operations = append(operations, json.RawMessage(raw))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, false, err
+	operations := rows
+	if operations == nil {
+		operations = []json.RawMessage{}
 	}
 
 	hasMore := len(operations) > limit
@@ -127,7 +83,5 @@ func authFailureStatus(err error) int {
 }
 
 func (s *Store) Boundary(ctx context.Context, projectID, userID uuid.UUID) (int64, error) {
-	var seq int64
-	err := s.DB.QueryRowContext(ctx, `SELECT p.last_seq FROM projects p JOIN project_members pm ON pm.project_id=p.id JOIN workspace_members wm ON wm.workspace_id=p.workspace_id AND wm.user_id=pm.user_id WHERE p.id=$1 AND pm.user_id=$2`, projectID, userID).Scan(&seq)
-	return seq, err
+	return db.New(s.DB).GetSocketSequence(ctx, db.GetSocketSequenceParams{ProjectID: projectID, UserID: userID})
 }

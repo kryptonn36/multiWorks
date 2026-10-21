@@ -225,3 +225,11 @@ textarea:focus { border-color: #6aa684; box-shadow: 0 0 0 3px #2075530c; }
 .presence-bar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:18px; font-size:13px; }
 .presence-person { display:inline-flex; align-items:center; gap:6px; overflow-wrap:anywhere; }
 .presence-avatar { display:inline-grid; place-items:center; width:28px; height:28px; border-radius:50%; background:#e5f1e9; color:var(--green); font-size:10px; }
+
+.history-panel { margin-top:24px; }
+.history-columns { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin:20px 0; }
+.history-columns ul { list-style:none; margin:0; padding:0; max-height:300px; overflow:auto; }
+.history-columns li { padding:7px 0; }
+.history-preview { border-top:1px solid var(--line); padding-top:20px; }
+.history-image { max-width:240px; max-height:160px; object-fit:contain; }
+@media (max-width:640px) { .history-columns { grid-template-columns:1fr; } }

@@ -12,8 +12,8 @@ import (
 )
 
 type Handler struct {
-	database *sql.DB
-	queries  *db.Queries
+	database            *sql.DB
+	queries             *db.Queries
 	membershipPublisher func(uuid.UUID, uuid.UUID)
 }
 
@@ -34,21 +34,21 @@ type createWorkspaceRequest struct {
 }
 
 type addWorkspaceMemberRequest struct {
-    Email string `json:"email" binding:"required,email"`
-    Role  string `json:"role" binding:"required"`
+	Email string `json:"email" binding:"required,email"`
+	Role  string `json:"role" binding:"required"`
 }
 
 type workspaceResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	CreatedBy uuid.UUID `json:"created_by"`
+	ID        uuid.UUID   `json:"id"`
+	Name      string      `json:"name"`
+	CreatedBy uuid.UUID   `json:"created_by"`
 	CreatedAt interface{} `json:"created_at"`
 }
 
 type workspaceMemberResponse struct {
-	UserID   uuid.UUID `json:"user_id"`
-	Email    string    `json:"email"`
-	Role     string    `json:"role"`
+	UserID   uuid.UUID   `json:"user_id"`
+	Email    string      `json:"email"`
+	Role     string      `json:"role"`
 	JoinedAt interface{} `json:"joined_at"`
 }
 
@@ -252,109 +252,134 @@ func (h *Handler) ListMembers(c *gin.Context) {
 }
 
 func (h *Handler) AddMember(c *gin.Context) {
-    userID, ok := currentUserID(c)
-    if !ok {
-        respondError(c, http.StatusUnauthorized, "authentication required")
-        return
-    }
+	userID, ok := currentUserID(c)
+	if !ok {
+		respondError(c, http.StatusUnauthorized, "authentication required")
+		return
+	}
 
-    workspaceID, ok := parseID(c.Param("workspaceID"))
-    if !ok {
-        respondError(c, http.StatusNotFound, "workspace not found")
-        return
-    }
+	workspaceID, ok := parseID(c.Param("workspaceID"))
+	if !ok {
+		respondError(c, http.StatusNotFound, "workspace not found")
+		return
+	}
 
-    var req addWorkspaceMemberRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
-        respondError(c, http.StatusBadRequest, "valid email and role are required")
-        return
-    }
+	var req addWorkspaceMemberRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "valid email and role are required")
+		return
+	}
 
-    email := strings.TrimSpace(req.Email)
-    role := strings.TrimSpace(req.Role)
+	email := strings.TrimSpace(req.Email)
+	role := strings.TrimSpace(req.Role)
 
-    if role != "admin" && role != "member" {
-        respondError(c, http.StatusBadRequest, "role must be admin or member")
-        return
-    }
+	if role != "admin" && role != "member" {
+		respondError(c, http.StatusBadRequest, "role must be admin or member")
+		return
+	}
 
-    // Check whether the current user is allowed to add members.
-    actorRole, err := h.queries.GetWorkspaceRole(
-        c.Request.Context(),
-        db.GetWorkspaceRoleParams{
-            WorkspaceID: workspaceID,
-            UserID:      userID,
-        },
-    )
+	// Check whether the current user is allowed to add members.
+	tx, err := h.database.BeginTx(c.Request.Context(), nil)
+	if err != nil {
+		respondError(c, 500, "could not start membership change")
+		return
+	}
+	defer tx.Rollback()
+	_, lockWorkspaceErr := h.queries.WithTx(tx).LockWorkspace(c.Request.Context(), workspaceID)
+	if err := lockWorkspaceErr; err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(c, 404, "workspace not found")
+		} else {
+			respondError(c, 500, "could not lock membership change")
+		}
+		return
+	}
+	// Serialize workspace access changes with every affected project's writers.
+	if _, err := h.queries.WithTx(tx).LockWorkspaceProjects(c.Request.Context(), workspaceID); err != nil {
+		respondError(c, 500, "could not lock workspace projects")
+		return
+	}
+	queries := h.queries.WithTx(tx)
+	actorRole, err := queries.GetWorkspaceRole(
+		c.Request.Context(),
+		db.GetWorkspaceRoleParams{
+			WorkspaceID: workspaceID,
+			UserID:      userID,
+		},
+	)
 
-    if errors.Is(err, sql.ErrNoRows) {
-        respondError(c, http.StatusNotFound, "workspace not found")
-        return
-    }
-    if err != nil {
-        respondError(
-            c,
-            http.StatusInternalServerError,
-            "could not check workspace permissions",
-        )
-        return
-    }
+	if errors.Is(err, sql.ErrNoRows) {
+		respondError(c, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if err != nil {
+		respondError(
+			c,
+			http.StatusInternalServerError,
+			"could not check workspace permissions",
+		)
+		return
+	}
 
-    if actorRole != "owner" && actorRole != "admin" {
-        respondError(
-            c,
-            http.StatusForbidden,
-            "workspace owner or admin role required",
-        )
-        return
-    }
+	if actorRole != "owner" && actorRole != "admin" {
+		respondError(
+			c,
+			http.StatusForbidden,
+			"workspace owner or admin role required",
+		)
+		return
+	}
 
-    // Resolve the teammate's email to their internal UUID.
-    target, err := h.queries.GetUserByEmailForWorkspace(
-        c.Request.Context(),
-        email,
-    )
+	// Resolve the teammate's email to their internal UUID.
+	target, err := queries.GetUserByEmailForWorkspace(
+		c.Request.Context(),
+		email,
+	)
 
-    if errors.Is(err, sql.ErrNoRows) {
-        respondError(c, http.StatusNotFound, "user not found")
-        return
-    }
-    if err != nil {
-        respondError(
-            c,
-            http.StatusInternalServerError,
-            "could not find user",
-        )
-        return
-    }
+	if errors.Is(err, sql.ErrNoRows) {
+		respondError(c, http.StatusNotFound, "user not found")
+		return
+	}
+	if err != nil {
+		respondError(
+			c,
+			http.StatusInternalServerError,
+			"could not find user",
+		)
+		return
+	}
 
-    // Use the UUID internally; the client only needs to provide an email.
-    err = h.queries.AddWorkspaceMember(
-        c.Request.Context(),
-        db.AddWorkspaceMemberParams{
-            WorkspaceID: workspaceID,
-            UserID:      target.ID,
-            Role:        role,
-        },
-    )
+	// Use the UUID internally; the client only needs to provide an email.
+	err = queries.AddWorkspaceMember(
+		c.Request.Context(),
+		db.AddWorkspaceMemberParams{
+			WorkspaceID: workspaceID,
+			UserID:      target.ID,
+			Role:        role,
+		},
+	)
 
-    if err != nil {
-        respondError(
-            c,
-            http.StatusInternalServerError,
-            "could not add workspace member",
-        )
-        return
-    }
+	if err != nil {
+		respondError(
+			c,
+			http.StatusInternalServerError,
+			"could not add workspace member",
+		)
+		return
+	}
 
-    // The successful standalone SQL statement has committed before notification.
-    if h.membershipPublisher != nil {
-        h.membershipPublisher(workspaceID, target.ID)
-    }
+	if err := tx.Commit(); err != nil {
+		respondError(c, 500, "could not commit membership change")
+		return
+	}
+	// Publish only after the membership transaction commits.
+	if h.membershipPublisher != nil {
+		h.membershipPublisher(workspaceID, target.ID)
+	}
 
-    c.JSON(http.StatusOK, gin.H{
-        "status": "member added",
-        "email":  target.Email,
-        "role":   role,
-    })
+	c.JSON(http.StatusOK, gin.H{
+		"status": "member added",
+		"email":  target.Email,
+		"role":   role,
+	})
 }

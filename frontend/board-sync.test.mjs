@@ -158,3 +158,28 @@ test('live reducer failures do not advance the cursor or lose later buffered ope
   await sync.receive([op(1)]);
   assert.equal(sync.lastSeq, 2);
 });
+
+test('restore replaces board content while retaining the new operation sequence and overlap safety', async () => {
+  const sync = engine(async (id) => id === 'board' ? snapshot() : page());
+  await sync.initialize(); await sync.receive([op(1),op(2)]);
+  const old = snapshot(1,[sync.board.scenes[0]]);
+  await sync.receive([op(3,'restore_board',{seq:1,board_state:old})]);
+  assert.equal(sync.lastSeq,3); assert.equal(sync.board.last_seq,3); assert.equal(sync.board.scenes.length,1);
+  await sync.receive([op(3,'restore_board',{seq:1,board_state:old})]);assert.equal(sync.lastSeq,3);
+});
+
+test('restore uses the prepared base sequence and retries its original endpoint envelope', async () => {
+  let fail = true; const requests = []; let committed = false;
+  const sync = engine(async (id,options) => {
+    if(id==='board')return snapshot(7);
+    if(id==='replay-ops')return committed?page([op(8,'restore_board',{seq:0,board_state:snapshot()})]):page();
+    requests.push({id,...structuredClone(options)});committed=true;
+    if(fail)throw new Error('response lost');
+    return {operation:{project_id:'project',client_id:'client',op_id:'restore-intent',seq:8}};
+  });
+  await sync.initialize();
+  await assert.rejects(sync.submit('restore_board',{seq:0},'restore-intent',{baseSeq:7}),/response lost/);
+  fail=false;await sync.retry();
+  assert.equal(requests[0].id,'restore-history');assert.deepEqual(requests[1],requests[0]);
+  assert.equal(requests[0].context.seq,0);assert.equal(requests[0].body.base_seq,7);assert.equal(sync.lastSeq,8);
+});

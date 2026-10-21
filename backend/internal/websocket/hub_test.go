@@ -153,3 +153,45 @@ func TestPermissionSignalsTargetEverySocketForAffectedUser(t *testing.T) {
 		t.Fatal("incorrect permission notification targets")
 	}
 }
+
+func TestRevokeUserUsesOneShutdownPathAndUpdatesPresence(t *testing.T) {
+	h := NewHub()
+	project, user := uuid.New(), uuid.New()
+	first := &Client{ProjectID: project, UserID: user, Send: make(chan ServerMessage, 32)}
+	second := &Client{ProjectID: project, UserID: user, Send: make(chan ServerMessage, 32)}
+	other := &Client{ProjectID: project, UserID: uuid.New(), Send: make(chan ServerMessage, 32)}
+	for _, c := range []*Client{first, second, other} {
+		h.Register(c)
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 20 {
+				h.RevokeUser(project, user)
+				h.Unregister(first)
+				first.Close()
+				h.Broadcast(project, ServerMessage{Type: "presence"})
+			}
+		}()
+	}
+	wg.Wait()
+	for _, c := range []*Client{first, second} {
+		select {
+		case <-c.Done:
+		default:
+			t.Fatal("revoked client remained connected")
+		}
+	}
+	for _, c := range h.Clients(project) {
+		if c.UserID == user {
+			t.Fatal("revoked socket remained registered")
+		}
+	}
+	// Neither shutdown nor revocation closes Send, even with concurrent producers.
+	select {
+	case first.Send <- ServerMessage{Type: "replay"}:
+	default:
+	}
+}
