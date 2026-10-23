@@ -1,0 +1,15 @@
+{
+  "results": [
+    "Two isolated browser sessions sign in through the real login form",
+    "Live collaboration, viewed-scene presence, and concurrent field edits converge in both sessions",
+    "Duplicate uploads share one asset and protected thumbnails update live",
+    "Graceful backend restart preserves state and an unconfirmed edit retries successfully",
+    "Abrupt backend termination recovers committed operations without duplicating a lost-acknowledgment write",
+    "Agent drafts stay unapplied until approval; rejection, stale checks, and failure tokens leave the board intact",
+    "Restore to seq 40 rejects a stale preview, then commits a new operation that converges in both sessions",
+    "A mid-session role downgrade blocks writes through the UI with the existing JWT",
+    "Final board, operation ordering, persisted bytes, and mobile rendering are consistent"
+  ],
+  "projectID": "8f64174b-e480-4516-a333-5c05de5d322d",
+  "appliedSequence": 44
+}

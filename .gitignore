@@ -1,2 +1,17 @@
-# Generated local verification artifacts.
-/test-results/
+
+.env
+.env.*
+!.env.example
+
+*.log
+coverage.out
+bin/
+tmp/
+vendor/
+
+.idea/
+.vscode/
+.DS_Store
+
+# Local asset storage
+/data/
